@@ -139,7 +139,7 @@
           批量发放奖励
         </el-button>
       </div>
-      <el-table :data="list" v-loading="loading" stripe @selection-change="(val) => selectedRows = val">
+      <el-table ref="upgradeTableRef" :data="list" v-loading="loading" stripe @selection-change="(val) => selectedRows = val">
         <el-table-column type="selection" width="42" align="center" />
         <el-table-column type="index" label="#" width="60" align="center" />
         <el-table-column label="用户" width="180">
@@ -536,6 +536,7 @@ const stats = ref(null)
 const allLevels = ref([])
 const byLevelData = ref([])
 const selectedRows = ref([])
+const upgradeTableRef = ref(null)
 const filters = reactive({
   keyword: '',
   status: '',
@@ -822,12 +823,13 @@ const submitManualUpgrade = async () => {
     await upgradeRecordApi.manualUpgrade(manualForm)
     ElMessage.success('手动升级成功')
     manualUpgradeVisible.value = false
-    loadList()
-    loadStats()
+    await loadList()
+    await loadStats()
   } catch {
     ElMessage.success('手动升级成功（模拟）')
     manualUpgradeVisible.value = false
-    loadList()
+    await loadList()
+    loadStats()
   }
 }
 
@@ -847,8 +849,8 @@ const submitAutoUpgrade = async () => {
     autoResult.value = res.data
     if (!autoForm.dry_run) {
       ElMessage.success(`自动升级完成，成功升级 ${res.data?.upgraded_count || 0} 人`)
-      loadList()
-      loadStats()
+      await loadList()
+      await loadStats()
     }
   } catch {
     autoResult.value = {
@@ -861,7 +863,8 @@ const submitAutoUpgrade = async () => {
     }
     if (!autoForm.dry_run) {
       ElMessage.success('自动升级完成，成功升级 8 人（模拟）')
-      loadList()
+      await loadList()
+      loadStats()
     }
   }
 }
@@ -875,12 +878,39 @@ const rewardAllPending = async () => {
     )
     await upgradeRecordApi.rewardAllPending()
     ElMessage.success('所有待处理奖励已发放')
-    loadList()
-    loadStats()
+    await loadList()
+    await loadStats()
   } catch {
     ElMessage.success('所有待处理奖励已发放（模拟）')
-    loadList()
+    applyAllPendingRewardLocally()
   }
+}
+
+const applyAllPendingRewardLocally = () => {
+  const now = new Date().toISOString().replace('T', ' ').slice(0, 19)
+  list.value = list.value.map(row => {
+    if (!row.is_rewarded && (row.reward_bonus || 0) > 0 && row.status === 2) {
+      const newRow = { ...row, is_rewarded: true, rewarded_at: now, status: 4 }
+      newRow.operation_logs = [
+        ...(row.operation_logs || []),
+        {
+          action: 'reward', action_label: '发放升级奖励',
+          operator_id: null, operator_name: '系统',
+          remark: '批量发放全部待处理奖励',
+          old_status: row.status, new_status: 4,
+          created_at: now,
+        }
+      ]
+      if (detailVisible.value && currentDetail.value?.id === row.id) {
+        currentDetail.value = buildMockUpgradeDetail(newRow)
+      }
+      return newRow
+    }
+    return row
+  })
+  selectedRows.value = []
+  upgradeTableRef.value?.clearSelection?.()
+  loadStats()
 }
 
 const viewDetail = async (row) => {
@@ -901,6 +931,55 @@ const openRemarkDialog = (action, id, title, ids = null) => {
   remarkForm.operator_id = ''
   remarkForm.remark = ''
   remarkDialogVisible.value = true
+}
+
+const applyUpgradeActionLocally = (action, id, ids, remark) => {
+  const now = new Date().toISOString().replace('T', ' ').slice(0, 19)
+  const operatorName = remarkForm.operator_id ? '管理员' : '系统'
+  const actionMap = {
+    approve: { newStatus: 2, actionLabel: '审核通过', actionName: 'approve' },
+    reject: { newStatus: 3, actionLabel: '审核拒绝', actionName: 'reject' },
+    reward: { newStatus: 4, actionLabel: '发放升级奖励', actionName: 'reward', setReward: true },
+    batch_approve: { newStatus: 2, actionLabel: '批量审核通过', actionName: 'approve' },
+    batch_reject: { newStatus: 3, actionLabel: '批量审核拒绝', actionName: 'reject' },
+    batch_reward: { newStatus: 4, actionLabel: '批量发放升级奖励', actionName: 'reward', setReward: true },
+  }
+  const cfg = actionMap[action]
+  if (!cfg) return
+  const targetIds = action.startsWith('batch_') ? (ids || []) : [id]
+  list.value = list.value.map(row => {
+    if (!targetIds.includes(row.id)) return row
+    const newRow = { ...row }
+    if (cfg.newStatus != null) newRow.status = cfg.newStatus
+    if (cfg.setReward) {
+      newRow.is_rewarded = true
+      newRow.rewarded_at = now
+    }
+    if (cfg.newStatus === 2 || cfg.newStatus === 3) {
+      newRow.reviewed_at = now
+      newRow.reviewer = { nickname: operatorName, username: remarkForm.operator_id ? 'admin' : 'system' }
+    }
+    newRow.operation_logs = [
+      ...(row.operation_logs || []),
+      {
+        action: cfg.actionName,
+        action_label: cfg.actionLabel,
+        operator_id: remarkForm.operator_id || null,
+        operator_name: operatorName,
+        remark: remark || cfg.actionLabel,
+        old_status: row.status,
+        new_status: cfg.newStatus ?? row.status,
+        created_at: now,
+      }
+    ]
+    if (detailVisible.value && currentDetail.value?.id === row.id) {
+      currentDetail.value = buildMockUpgradeDetail(newRow)
+    }
+    return newRow
+  })
+  selectedRows.value = []
+  upgradeTableRef.value?.clearSelection?.()
+  loadStats()
 }
 
 const submitRemarkAction = async () => {
@@ -927,19 +1006,17 @@ const submitRemarkAction = async () => {
     }
     ElMessage.success('操作成功')
     remarkDialogVisible.value = false
-    loadList()
-    loadStats()
+    await loadList()
+    await loadStats()
+    selectedRows.value = []
+    upgradeTableRef.value?.clearSelection?.()
     if (detailVisible.value && id && currentDetail.value?.id === id) {
-      viewDetail(currentDetail.value)
+      await viewDetail(currentDetail.value)
     }
   } catch {
     ElMessage.success('操作成功（模拟）')
     remarkDialogVisible.value = false
-    loadList()
-    loadStats()
-    if (detailVisible.value && id && currentDetail.value?.id === id) {
-      viewDetail(currentDetail.value)
-    }
+    applyUpgradeActionLocally(action, id, ids, remarkForm.remark)
   }
 }
 

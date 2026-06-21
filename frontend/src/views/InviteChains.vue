@@ -183,6 +183,7 @@
             </el-button>
           </div>
           <el-table
+            ref="chainTableRef"
             :data="chainsList"
             size="small"
             v-loading="chainLoading"
@@ -470,6 +471,7 @@ const chainLoading = ref(false)
 const chainFilters = reactive({ depth: '', is_rewarded: '', status: '' })
 const globalStats = ref(null)
 const selectedChains = ref([])
+const chainTableRef = ref(null)
 
 const createInviteVisible = ref(false)
 const createInviteFormRef = ref(null)
@@ -817,6 +819,52 @@ const openRemarkDialog = (action, id, title, ids = null) => {
   remarkDialogVisible.value = true
 }
 
+const applyChainActionLocally = (action, id, ids, remark) => {
+  const now = new Date().toISOString().replace('T', ' ').slice(0, 19)
+  const operatorName = remarkForm.operator_id ? '管理员' : '系统'
+  const actionMap = {
+    confirm: { newStatus: 2, actionLabel: '确认邀请关系', setField: 'confirmed_at' },
+    cancel: { newStatus: 3, actionLabel: '取消邀请关系', setField: 'cancelled_at' },
+    reward: { newStatus: null, actionLabel: '发放邀请奖励', setField: 'rewarded_at', setReward: true },
+    batch_confirm: { newStatus: 2, actionLabel: '批量确认邀请关系', setField: 'confirmed_at' },
+    batch_cancel: { newStatus: 3, actionLabel: '批量取消邀请关系', setField: 'cancelled_at' },
+    batch_reward: { newStatus: null, actionLabel: '批量发放邀请奖励', setField: 'rewarded_at', setReward: true },
+  }
+  const cfg = actionMap[action]
+  if (!cfg) return
+  const targetIds = action.startsWith('batch_') ? (ids || []) : [id]
+  chainsList.value = chainsList.value.map(row => {
+    if (!targetIds.includes(row.id)) return row
+    const newRow = { ...row }
+    if (cfg.newStatus != null) newRow.status = cfg.newStatus
+    if (cfg.setReward) {
+      newRow.is_rewarded = true
+      newRow.rewarded_at = now
+    }
+    if (cfg.setField) newRow[cfg.setField] = now
+    newRow.operation_logs = [
+      ...(row.operation_logs || []),
+      {
+        action: action.replace('batch_', ''),
+        action_label: cfg.actionLabel,
+        operator_id: remarkForm.operator_id || null,
+        operator_name: operatorName,
+        remark: remark || cfg.actionLabel,
+        old_status: row.status,
+        new_status: cfg.newStatus ?? row.status,
+        created_at: now,
+      }
+    ]
+    if (chainDetailVisible.value && currentChainDetail.value?.id === row.id) {
+      currentChainDetail.value = buildMockChainDetail(newRow)
+    }
+    return newRow
+  })
+  selectedChains.value = []
+  chainTableRef.value?.clearSelection?.()
+  loadGlobalStats()
+}
+
 const submitRemarkAction = async () => {
   const action = remarkAction.value
   const id = remarkTargetId.value
@@ -841,17 +889,16 @@ const submitRemarkAction = async () => {
     }
     ElMessage.success('操作成功')
     remarkDialogVisible.value = false
-    loadChainsList()
+    await loadChainsList()
+    selectedChains.value = []
+    chainTableRef.value?.clearSelection?.()
     if (chainDetailVisible.value && id && currentChainDetail.value?.id === id) {
-      viewChainDetail(currentChainDetail.value)
+      await viewChainDetail(currentChainDetail.value)
     }
   } catch {
     ElMessage.success('操作成功（模拟）')
     remarkDialogVisible.value = false
-    loadChainsList()
-    if (chainDetailVisible.value && id && currentChainDetail.value?.id === id) {
-      viewChainDetail(currentChainDetail.value)
-    }
+    applyChainActionLocally(action, id, ids, remarkForm.remark)
   }
 }
 
