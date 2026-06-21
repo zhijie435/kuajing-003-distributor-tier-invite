@@ -127,6 +127,8 @@ class UpgradeRecord extends BaseModel
                     self::TYPE_ADMIN => '后台管理员调整',
                     default => '等级变更',
                 },
+                'old_status' => $initialStatus,
+                'new_status' => $initialStatus,
                 'created_at' => now()->toDateTimeString(),
             ]];
             $record = self::create([
@@ -180,7 +182,7 @@ class UpgradeRecord extends BaseModel
         return $this->newLevel->isLowerThan($this->oldLevel);
     }
 
-    public function addOperationLog(string $action, string $actionLabel, ?int $operatorId = null, ?string $remark = null): void
+    public function addOperationLog(string $action, string $actionLabel, ?int $operatorId = null, ?string $remark = null, ?int $oldStatus = null, ?int $newStatus = null): void
     {
         $logs = is_array($this->operation_logs) ? $this->operation_logs : [];
         $operator = $operatorId ? User::find($operatorId) : null;
@@ -190,8 +192,8 @@ class UpgradeRecord extends BaseModel
             'operator_id' => $operatorId,
             'operator_name' => $operator ? ($operator->nickname ?: $operator->username) : '系统',
             'remark' => $remark,
-            'old_status' => $this->getOriginal('status'),
-            'new_status' => $this->status,
+            'old_status' => $oldStatus ?? $this->getOriginal('status'),
+            'new_status' => $newStatus ?? $this->status,
             'created_at' => now()->toDateTimeString(),
         ];
         $this->operation_logs = $logs;
@@ -261,16 +263,18 @@ class UpgradeRecord extends BaseModel
             return false;
         }
         return DB::transaction(function () use ($reviewerId, $remark) {
+            $oldStatus = $this->status;
             $this->status = self::STATUS_APPROVED;
             $this->reviewed_at = now();
             $this->reviewer_id = $reviewerId;
-            $this->addOperationLog('approve', '审核通过', $reviewerId, $remark ?? '审核通过，升级有效');
+            $this->addOperationLog('approve', '审核通过', $reviewerId, $remark ?? '审核通过，升级有效', $oldStatus, self::STATUS_APPROVED);
             $result = $this->save();
             if ($result && $this->reward_bonus <= 0) {
+                $prevStatus = $this->status;
                 $this->is_rewarded = true;
                 $this->rewarded_at = now();
                 $this->status = self::STATUS_REWARDED;
-                $this->addOperationLog('reward', '发放升级奖励', $reviewerId, '无奖励金额，自动标记已发奖');
+                $this->addOperationLog('reward', '发放升级奖励', $reviewerId, '无奖励金额，自动标记已发奖', $prevStatus, self::STATUS_REWARDED);
                 $result = $this->save();
             }
             return $result;
@@ -283,10 +287,11 @@ class UpgradeRecord extends BaseModel
             return false;
         }
         return DB::transaction(function () use ($reviewerId, $remark) {
+            $oldStatus = $this->status;
             $this->status = self::STATUS_REJECTED;
             $this->reviewed_at = now();
             $this->reviewer_id = $reviewerId;
-            $this->addOperationLog('reject', '审核拒绝', $reviewerId, $remark ?? '审核不通过');
+            $this->addOperationLog('reject', '审核拒绝', $reviewerId, $remark ?? '审核不通过', $oldStatus, self::STATUS_REJECTED);
             $result = $this->save();
             if ($result && $this->old_level_id) {
                 $user = User::find($this->user_id);
@@ -301,13 +306,26 @@ class UpgradeRecord extends BaseModel
 
     public function markRewarded(?int $operatorId = null, ?string $remark = null): bool
     {
-        if ($this->status == self::STATUS_PENDING) {
-            $this->approve($operatorId, '发奖前自动审核通过');
+        if ($this->is_rewarded || $this->status == self::STATUS_REWARDED) {
+            return false;
         }
+        if ($this->status == self::STATUS_REJECTED) {
+            return false;
+        }
+        if ($this->status == self::STATUS_PENDING) {
+            $approved = $this->approve($operatorId, '发奖前自动审核通过');
+            if (!$approved) {
+                return false;
+            }
+            if ($this->is_rewarded || $this->status == self::STATUS_REWARDED) {
+                return true;
+            }
+        }
+        $oldStatus = $this->status;
         $this->is_rewarded = true;
         $this->rewarded_at = now();
         $this->status = self::STATUS_REWARDED;
-        $this->addOperationLog('reward', '发放升级奖励', $operatorId, $remark ?? ('发放升级奖励 ' . $this->reward_bonus . ' 元'));
+        $this->addOperationLog('reward', '发放升级奖励', $operatorId, $remark ?? ('发放升级奖励 ' . $this->reward_bonus . ' 元'), $oldStatus, self::STATUS_REWARDED);
         return $this->save();
     }
 

@@ -929,11 +929,17 @@ const submitRemarkAction = async () => {
     remarkDialogVisible.value = false
     loadList()
     loadStats()
+    if (detailVisible.value && id && currentDetail.value?.id === id) {
+      viewDetail(currentDetail.value)
+    }
   } catch {
     ElMessage.success('操作成功（模拟）')
     remarkDialogVisible.value = false
     loadList()
     loadStats()
+    if (detailVisible.value && id && currentDetail.value?.id === id) {
+      viewDetail(currentDetail.value)
+    }
   }
 }
 

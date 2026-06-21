@@ -842,10 +842,16 @@ const submitRemarkAction = async () => {
     ElMessage.success('操作成功')
     remarkDialogVisible.value = false
     loadChainsList()
+    if (chainDetailVisible.value && id && currentChainDetail.value?.id === id) {
+      viewChainDetail(currentChainDetail.value)
+    }
   } catch {
     ElMessage.success('操作成功（模拟）')
     remarkDialogVisible.value = false
     loadChainsList()
+    if (chainDetailVisible.value && id && currentChainDetail.value?.id === id) {
+      viewChainDetail(currentChainDetail.value)
+    }
   }
 }
 

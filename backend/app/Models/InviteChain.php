@@ -88,6 +88,8 @@ class InviteChain extends BaseModel
                 'operator_id' => null,
                 'operator_name' => '系统',
                 'remark' => $inviteCodeId ? '通过邀请码建立关系' : '直接创建邀请关系',
+                'old_status' => self::STATUS_CONFIRMED,
+                'new_status' => self::STATUS_CONFIRMED,
                 'created_at' => now()->toDateTimeString(),
             ]];
             $chain = self::create([
@@ -145,6 +147,8 @@ class InviteChain extends BaseModel
                     'operator_id' => null,
                     'operator_name' => '系统',
                     'remark' => "深度{$depth}间接邀请",
+                    'old_status' => self::STATUS_CONFIRMED,
+                    'new_status' => self::STATUS_CONFIRMED,
                     'created_at' => now()->toDateTimeString(),
                 ]],
                 'remark' => "深度{$depth}间接邀请",
@@ -158,15 +162,16 @@ class InviteChain extends BaseModel
 
     public function markRewarded(?int $operatorId = null, ?string $remark = null): bool
     {
+        $oldStatus = $this->status;
         $this->is_rewarded = true;
         $this->rewarded_at = now();
         $this->status = self::STATUS_REWARDED;
         $this->operator_id = $operatorId;
-        $this->addOperationLog('reward', '发放邀请奖励', $operatorId, $remark ?? '手动发放奖励');
+        $this->addOperationLog('reward', '发放邀请奖励', $operatorId, $remark ?? '手动发放奖励', $oldStatus, self::STATUS_REWARDED);
         return $this->save();
     }
 
-    public function addOperationLog(string $action, string $actionLabel, ?int $operatorId = null, ?string $remark = null): void
+    public function addOperationLog(string $action, string $actionLabel, ?int $operatorId = null, ?string $remark = null, ?int $oldStatus = null, ?int $newStatus = null): void
     {
         $logs = is_array($this->operation_logs) ? $this->operation_logs : [];
         $operator = $operatorId ? User::find($operatorId) : null;
@@ -176,8 +181,8 @@ class InviteChain extends BaseModel
             'operator_id' => $operatorId,
             'operator_name' => $operator ? ($operator->nickname ?: $operator->username) : '系统',
             'remark' => $remark,
-            'old_status' => $this->getOriginal('status'),
-            'new_status' => $this->status,
+            'old_status' => $oldStatus ?? $this->getOriginal('status'),
+            'new_status' => $newStatus ?? $this->status,
             'created_at' => now()->toDateTimeString(),
         ];
         $this->operation_logs = $logs;
@@ -240,10 +245,11 @@ class InviteChain extends BaseModel
         if (!$this->canConfirm()) {
             return false;
         }
+        $oldStatus = $this->status;
         $this->status = self::STATUS_CONFIRMED;
         $this->confirmed_at = now();
         $this->operator_id = $operatorId;
-        $this->addOperationLog('confirm', '确认邀请关系', $operatorId, $remark ?? '手动确认邀请关系有效');
+        $this->addOperationLog('confirm', '确认邀请关系', $operatorId, $remark ?? '手动确认邀请关系有效', $oldStatus, self::STATUS_CONFIRMED);
         return $this->save();
     }
 
@@ -252,10 +258,11 @@ class InviteChain extends BaseModel
         if (!$this->canCancel()) {
             return false;
         }
+        $oldStatus = $this->status;
         $this->status = self::STATUS_CANCELLED;
         $this->cancelled_at = now();
         $this->operator_id = $operatorId;
-        $this->addOperationLog('cancel', '取消邀请关系', $operatorId, $remark ?? '手动取消邀请关系');
+        $this->addOperationLog('cancel', '取消邀请关系', $operatorId, $remark ?? '手动取消邀请关系', $oldStatus, self::STATUS_CANCELLED);
         return DB::transaction(function () {
             $result = $this->save();
             if ($result && $this->depth == 1) {
@@ -288,7 +295,9 @@ class InviteChain extends BaseModel
                 'add_commission',
                 '增加佣金',
                 $operatorId,
-                ($remark ?? '佣金结算') . "，增加金额：{$amount}，原累计：{$oldCommission}"
+                ($remark ?? '佣金结算') . "，增加金额：{$amount}，原累计：{$oldCommission}",
+                $this->status,
+                $this->status
             );
         }
         return $this->save();
