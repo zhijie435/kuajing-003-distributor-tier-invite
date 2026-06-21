@@ -245,7 +245,7 @@ class InviteCodeController extends Controller
         if (!$inviteCode) {
             return $this->success([
                 'valid' => false,
-                'reason' => '邀请码不存在',
+                'reason' => '邀请码不存在，请检查输入是否正确',
             ]);
         }
         $inviteCode->checkAndUpdateStatus();
@@ -253,11 +253,11 @@ class InviteCodeController extends Controller
         $reason = '';
         if (!$canUse) {
             if ($inviteCode->status == InviteCode::STATUS_DISABLED) {
-                $reason = '邀请码已禁用';
+                $reason = '邀请码已被禁用，请联系管理员';
             } elseif ($inviteCode->status == InviteCode::STATUS_USED_UP) {
-                $reason = '邀请码已用完';
+                $reason = '邀请码已达使用上限，无法继续使用';
             } elseif ($inviteCode->status == InviteCode::STATUS_EXPIRED) {
-                $reason = '邀请码已过期';
+                $reason = '邀请码已过期，请使用新的邀请码';
             } else {
                 $reason = '邀请码不可用';
             }

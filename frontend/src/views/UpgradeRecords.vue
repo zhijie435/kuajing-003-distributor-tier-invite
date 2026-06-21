@@ -253,7 +253,7 @@
               @click="rejectRecord(row)"
             >拒绝</el-button>
             <el-button
-              v-if="!row.is_rewarded && row.reward_bonus > 0 && row.status === 2"
+              v-if="!row.is_rewarded && row.reward_bonus > 0 && (row.status === 1 || row.status === 2)"
               link
               type="warning"
               size="small"
@@ -889,15 +889,34 @@ const rewardAllPending = async () => {
 const applyAllPendingRewardLocally = () => {
   const now = new Date().toISOString().replace('T', ' ').slice(0, 19)
   list.value = list.value.map(row => {
-    if (!row.is_rewarded && (row.reward_bonus || 0) > 0 && row.status === 2) {
-      const newRow = { ...row, is_rewarded: true, rewarded_at: now, status: 4 }
+    if (!row.is_rewarded && (row.reward_bonus || 0) > 0 && (row.status === 1 || row.status === 2)) {
+      const newRow = { ...row }
+      if (row.status === 1) {
+        newRow.status = 2
+        newRow.reviewed_at = now
+        newRow.reviewer = { nickname: '系统', username: 'system' }
+        newRow.operation_logs = [
+          ...(row.operation_logs || []),
+          {
+            action: 'approve', action_label: '审核通过',
+            operator_id: null, operator_name: '系统',
+            remark: '发奖前自动审核通过',
+            old_status: 1, new_status: 2,
+            created_at: now,
+          }
+        ]
+      }
+      newRow.is_rewarded = true
+      newRow.rewarded_at = now
+      newRow.status = 4
       newRow.operation_logs = [
-        ...(row.operation_logs || []),
+        ...(newRow.operation_logs || row.operation_logs || []),
         {
           action: 'reward', action_label: '发放升级奖励',
           operator_id: null, operator_name: '系统',
           remark: '批量发放全部待处理奖励',
-          old_status: row.status, new_status: 4,
+          old_status: newRow.status === 4 ? 2 : row.status,
+          new_status: 4,
           created_at: now,
         }
       ]
@@ -950,28 +969,44 @@ const applyUpgradeActionLocally = (action, id, ids, remark) => {
   list.value = list.value.map(row => {
     if (!targetIds.includes(row.id)) return row
     const newRow = { ...row }
+    const logs = [...(row.operation_logs || [])]
+    if (cfg.setReward && row.status === 1) {
+      newRow.status = 2
+      newRow.reviewed_at = now
+      newRow.reviewer = { nickname: operatorName, username: remarkForm.operator_id ? 'admin' : 'system' }
+      logs.push({
+        action: 'approve',
+        action_label: '审核通过',
+        operator_id: remarkForm.operator_id || null,
+        operator_name: operatorName,
+        remark: '发奖前自动审核通过',
+        old_status: row.status,
+        new_status: 2,
+        created_at: now,
+      })
+    }
     if (cfg.newStatus != null) newRow.status = cfg.newStatus
     if (cfg.setReward) {
       newRow.is_rewarded = true
       newRow.rewarded_at = now
     }
     if (cfg.newStatus === 2 || cfg.newStatus === 3) {
-      newRow.reviewed_at = now
-      newRow.reviewer = { nickname: operatorName, username: remarkForm.operator_id ? 'admin' : 'system' }
-    }
-    newRow.operation_logs = [
-      ...(row.operation_logs || []),
-      {
-        action: cfg.actionName,
-        action_label: cfg.actionLabel,
-        operator_id: remarkForm.operator_id || null,
-        operator_name: operatorName,
-        remark: remark || cfg.actionLabel,
-        old_status: row.status,
-        new_status: cfg.newStatus ?? row.status,
-        created_at: now,
+      if (!newRow.reviewed_at) {
+        newRow.reviewed_at = now
+        newRow.reviewer = { nickname: operatorName, username: remarkForm.operator_id ? 'admin' : 'system' }
       }
-    ]
+    }
+    logs.push({
+      action: cfg.actionName,
+      action_label: cfg.actionLabel,
+      operator_id: remarkForm.operator_id || null,
+      operator_name: operatorName,
+      remark: remark || cfg.actionLabel,
+      old_status: row.status,
+      new_status: cfg.newStatus ?? newRow.status,
+      created_at: now,
+    })
+    newRow.operation_logs = logs
     if (detailVisible.value && currentDetail.value?.id === row.id) {
       currentDetail.value = buildMockUpgradeDetail(newRow)
     }
@@ -1045,8 +1080,8 @@ const batchReject = () => {
 }
 
 const batchReward = () => {
-  const ids = selectedRows.value.filter(r => !r.is_rewarded && r.reward_bonus > 0 && r.status === 2).map(r => r.id)
-  if (!ids.length) return ElMessage.warning('没有待发放的奖励（需审核通过且有奖励金额）')
+  const ids = selectedRows.value.filter(r => !r.is_rewarded && r.reward_bonus > 0 && (r.status === 1 || r.status === 2)).map(r => r.id)
+  if (!ids.length) return ElMessage.warning('没有待发放的奖励（需待审核或已审核通过且有奖励金额）')
   openRemarkDialog('batch_reward', null, `批量发放升级奖励 (${ids.length}条)`, ids)
 }
 

@@ -237,7 +237,8 @@ class InviteChain extends BaseModel
 
     public function canCancel(): bool
     {
-        return in_array($this->status, [self::STATUS_PENDING, self::STATUS_CONFIRMED]);
+        return in_array($this->status, [self::STATUS_PENDING, self::STATUS_CONFIRMED])
+            && !$this->is_rewarded;
     }
 
     public function confirm(?int $operatorId = null, ?string $remark = null): bool

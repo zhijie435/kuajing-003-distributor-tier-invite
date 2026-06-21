@@ -370,7 +370,7 @@ class InviteChainController extends Controller
             return $this->error('奖励已发放');
         }
         if (!$chain->isConfirmed()) {
-            return $this->error('请先确认邀请关系后再发放奖励');
+            return $this->error('当前状态不可发放奖励，请先确认邀请关系');
         }
         $validator = Validator::make($request->all(), [
             'operator_id' => 'nullable|integer|exists:users,id',
@@ -449,9 +449,6 @@ class InviteChainController extends Controller
         ]);
         if ($validator->fails()) {
             return $this->error('参数验证失败', 422, $validator->errors());
-        }
-        if ($chain->isRewarded()) {
-            return $this->error('已发放奖励的邀请记录不可取消');
         }
         $chain->cancel(
             $request->input('operator_id'),

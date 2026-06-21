@@ -261,7 +261,7 @@
                   @click="confirmChain(row)"
                 >确认</el-button>
                 <el-button
-                  v-if="row.status === 1 || row.status === 2"
+                  v-if="(row.status === 1 || row.status === 2) && !row.is_rewarded"
                   link
                   type="danger"
                   size="small"
