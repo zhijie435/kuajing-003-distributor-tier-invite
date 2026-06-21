@@ -399,7 +399,7 @@
 
 <script setup>
 import { ref, reactive, onMounted, nextTick } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Plus, Search, RefreshLeft, Tickets, Connection, DocumentCopy,
   CircleCheck, CircleCheckFilled, Clock
@@ -693,9 +693,24 @@ const submitUseCode = async () => {
     useCodeDialogVisible.value = false
     await Promise.all([loadList(), loadStats()])
   } catch (err) {
+    const errMsg = err?.message || err?.response?.data?.message || '未知错误'
     try {
       await validateCode()
     } catch {}
+    try {
+      await ElMessageBox.confirm(
+        `邀请码流转提交失败，系统已自动回滚，所有数据未变更。\n\n失败原因：${errMsg}\n\n您可以修改信息后重试，或稍后再试。`,
+        '提交失败',
+        {
+          confirmButtonText: '重新提交',
+          cancelButtonText: '知道了',
+          type: 'error',
+          distinguishCancelAndClose: true
+        }
+      )
+      submitUseCode()
+    } catch {
+    }
   } finally {
     useCodeSubmitting.value = false
   }
