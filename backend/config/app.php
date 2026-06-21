@@ -78,12 +78,27 @@ return [
         'View' => Illuminate\Support\Facades\View::class,
     ],
     'invite_code' => [
-        'length' => 8,
-        'max_uses_per_code' => 100,
-        'default_expire_days' => 365,
+        'length' => env('INVITE_CODE_LENGTH', 8),
+        'max_uses_per_code' => env('INVITE_CODE_MAX_USES', 100),
+        'default_expire_days' => env('INVITE_CODE_EXPIRE_DAYS', 365),
     ],
     'dealer_levels' => [
-        'auto_upgrade' => true,
-        'check_interval' => 86400,
+        'auto_upgrade' => env('DEALER_AUTO_UPGRADE', true),
+        'check_interval' => env('DEALER_UPGRADE_CHECK_INTERVAL', 86400),
+    ],
+    'invite_chain' => [
+        'max_depth' => env('INVITE_CHAIN_MAX_DEPTH', 10),
+        'commission_decay_rate' => env('INVITE_CHAIN_COMMISSION_DECAY_RATE', 0.2),
+        'base_commission_rate' => env('INVITE_CHAIN_BASE_COMMISSION_RATE', 0.18),
+        'auto_confirm' => env('INVITE_CHAIN_AUTO_CONFIRM', true),
+        'reward_on_confirm' => env('INVITE_CHAIN_REWARD_ON_CONFIRM', false),
+    ],
+    'upgrade_record' => [
+        'auto_approve_auto_upgrade' => env('UPGRADE_AUTO_APPROVE_AUTO', true),
+        'auto_approve_invite_code' => env('UPGRADE_AUTO_APPROVE_INVITE_CODE', true),
+        'require_review_manual' => env('UPGRADE_REQUIRE_REVIEW_MANUAL', true),
+        'require_review_admin' => env('UPGRADE_REQUIRE_REVIEW_ADMIN', false),
+        'auto_reward_zero_bonus' => env('UPGRADE_AUTO_REWARD_ZERO_BONUS', true),
+        'reward_on_approve' => env('UPGRADE_REWARD_ON_APPROVE', false),
     ],
 ];

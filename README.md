@@ -166,6 +166,42 @@
 
 ---
 
+## 环境变量配置
+
+### 邀请码配置
+| 变量名 | 默认值 | 说明 |
+|--------|--------|------|
+| `INVITE_CODE_LENGTH` | `8` | 邀请码长度（字符数） |
+| `INVITE_CODE_MAX_USES` | `100` | 单个邀请码最大使用次数 |
+| `INVITE_CODE_EXPIRE_DAYS` | `365` | 邀请码默认有效天数 |
+
+### 邀请链路配置
+| 变量名 | 默认值 | 说明 |
+|--------|--------|------|
+| `INVITE_CHAIN_MAX_DEPTH` | `10` | 邀请链路最大追踪深度（层数） |
+| `INVITE_CHAIN_COMMISSION_DECAY_RATE` | `0.2` | 每层佣金衰减比例（0.2 = 每层衰减20%） |
+| `INVITE_CHAIN_BASE_COMMISSION_RATE` | `0.18` | 一级邀请基础佣金率（18%） |
+| `INVITE_CHAIN_AUTO_CONFIRM` | `true` | 是否自动确认邀请关系 |
+| `INVITE_CHAIN_REWARD_ON_CONFIRM` | `false` | 是否在确认邀请时自动发放奖励 |
+
+### 升级记录配置
+| 变量名 | 默认值 | 说明 |
+|--------|--------|------|
+| `UPGRADE_AUTO_APPROVE_AUTO` | `true` | 自动升级是否自动审核通过 |
+| `UPGRADE_AUTO_APPROVE_INVITE_CODE` | `true` | 邀请码升级是否自动审核通过 |
+| `UPGRADE_REQUIRE_REVIEW_MANUAL` | `true` | 手动升级是否需要审核 |
+| `UPGRADE_REQUIRE_REVIEW_ADMIN` | `false` | 后台调整是否需要审核 |
+| `UPGRADE_AUTO_REWARD_ZERO_BONUS` | `true` | 零奖励升级是否自动标记已发奖 |
+| `UPGRADE_REWARD_ON_APPROVE` | `false` | 审核通过时是否自动发放奖励 |
+
+### 经销商等级配置
+| 变量名 | 默认值 | 说明 |
+|--------|--------|------|
+| `DEALER_AUTO_UPGRADE` | `true` | 是否开启自动升级检测 |
+| `DEALER_UPGRADE_CHECK_INTERVAL` | `86400` | 自动升级检测间隔（秒） |
+
+---
+
 ## 快速启动
 
 ### 后端（Laravel 10 + PHP 8.1+）
@@ -178,7 +214,7 @@ composer install
 
 # 2. 配置环境
 cp .env.example .env
-# 编辑 .env 配置数据库连接
+# 编辑 .env 配置数据库连接及业务参数（邀请码/链路/升级等）
 php artisan key:generate
 
 # 3. 初始化数据库（二选一）
@@ -293,6 +329,133 @@ User A 业绩新增 $X
 | POST | `/manual-upgrade` | 手动升级 |
 | POST | `/check-auto-upgrade` | 自动升级检查（支持DryRun） |
 | PATCH | `/reward-all-pending` | 一键发全部待奖励 |
+
+---
+
+## 部署验收命令
+
+### 后端验收
+
+#### 1. 运行单元测试
+```bash
+cd backend
+
+# 运行全部测试
+php artisan test
+
+# 或使用 phpunit
+./vendor/bin/phpunit
+
+# 运行指定测试套件
+./vendor/bin/phpunit --testsuite=Unit
+```
+
+#### 2. 邀请链路专项测试
+```bash
+cd backend
+
+# 运行邀请链路状态流转测试
+./vendor/bin/phpunit tests/Unit/InviteChainStatusTest.php
+
+# 查看测试详情
+./vendor/bin/phpunit tests/Unit/InviteChainStatusTest.php -v
+```
+
+#### 3. 升级记录专项测试
+```bash
+cd backend
+
+# 运行升级记录状态流转测试
+./vendor/bin/phpunit tests/Unit/UpgradeRecordStatusTest.php
+
+# 查看测试详情
+./vendor/bin/phpunit tests/Unit/UpgradeRecordStatusTest.php -v
+```
+
+#### 4. 集成测试
+```bash
+cd backend
+
+# 运行全流程状态流转集成测试
+./vendor/bin/phpunit tests/Unit/StatusFlowIntegrationTest.php
+```
+
+#### 5. 代码风格检查
+```bash
+cd backend
+
+# 检查代码风格（Laravel Pint）
+./vendor/bin/pint --test
+
+# 自动修复代码风格
+./vendor/bin/pint
+```
+
+#### 6. 环境配置验证
+```bash
+cd backend
+
+# 检查关键环境变量是否配置
+php artisan tinker --execute="
+echo 'INVITE_CHAIN_MAX_DEPTH: ' . config('app.invite_chain.max_depth') . PHP_EOL;
+echo 'INVITE_CHAIN_COMMISSION_DECAY_RATE: ' . config('app.invite_chain.commission_decay_rate') . PHP_EOL;
+echo 'UPGRADE_AUTO_APPROVE_AUTO: ' . (config('app.upgrade_record.auto_approve_auto_upgrade') ? 'true' : 'false') . PHP_EOL;
+echo 'UPGRADE_REQUIRE_REVIEW_MANUAL: ' . (config('app.upgrade_record.require_review_manual') ? 'true' : 'false') . PHP_EOL;
+"
+```
+
+### 前端验收
+
+```bash
+cd frontend
+
+# 安装依赖
+npm install
+
+# 开发模式启动验证
+npm run dev
+
+# 生产构建验证
+npm run build
+
+# 预览构建结果
+npm run preview
+```
+
+### API 接口冒烟测试
+
+```bash
+# 1. 测试邀请码统计接口
+curl -s http://localhost:8000/api/invite-codes/stats | python3 -m json.tool
+
+# 2. 测试邀请链路树接口（用户ID=1）
+curl -s "http://localhost:8000/api/invite-chains/user/1/tree?depth=3" | python3 -m json.tool
+
+# 3. 测试升级记录统计接口
+curl -s http://localhost:8000/api/upgrade-records/stats | python3 -m json.tool
+
+# 4. 测试经销商等级列表接口
+curl -s http://localhost:8000/api/dealer-levels/all | python3 -m json.tool
+```
+
+### 数据库验证
+
+```bash
+# 检查表是否存在
+mysql -u root -p annotation_platform -e "SHOW TABLES;"
+
+# 查看邀请链路表结构
+mysql -u root -p annotation_platform -e "DESC invite_chains;"
+
+# 查看升级记录表结构
+mysql -u root -p annotation_platform -e "DESC upgrade_records;"
+
+# 查看邀请链路数据统计
+mysql -u root -p annotation_platform -e "SELECT depth, COUNT(*) as count FROM invite_chains GROUP BY depth ORDER BY depth;"
+
+# 查看升级记录类型统计
+mysql -u root -p annotation_platform -e "SELECT upgrade_type, COUNT(*) as count FROM upgrade_records GROUP BY upgrade_type;"
+```
 
 ---
 
