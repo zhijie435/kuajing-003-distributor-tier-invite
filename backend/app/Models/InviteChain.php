@@ -80,7 +80,8 @@ class InviteChain extends BaseModel
             $inviteCodeId,
             $rewardAmount,
             $commissionRate,
-            $level
+            $level,
+            $inviter
         ) {
             $initialLogs = [[
                 'action' => 'create',

@@ -23,6 +23,7 @@ class CreateUpgradeRecordsTable extends Migration
             $table->unsignedBigInteger('invite_code_id')->nullable()->comment('关联邀请码ID');
             $table->text('remark')->nullable()->comment('备注');
             $table->timestamps();
+            $table->softDeletes();
             $table->index('user_id');
             $table->index('old_level_id');
             $table->index('new_level_id');

@@ -293,7 +293,7 @@ class UpgradeRecord extends BaseModel
             $this->reviewer_id = $reviewerId;
             $this->addOperationLog('reject', '审核拒绝', $reviewerId, $remark ?? '审核不通过', $oldStatus, self::STATUS_REJECTED);
             $result = $this->save();
-            if ($result && $this->old_level_id) {
+            if ($result) {
                 $user = User::find($this->user_id);
                 if ($user) {
                     $user->dealer_level_id = $this->old_level_id;

@@ -117,7 +117,9 @@ class User extends BaseModel
             return [];
         }
         $ids = explode('-', trim($this->invite_path, '-'));
-        $ids = array_slice(array_filter($ids), 0, $maxDepth);
+        $ids = array_filter($ids);
+        array_pop($ids);
+        $ids = array_slice($ids, 0, $maxDepth);
         return array_reverse($ids);
     }
 

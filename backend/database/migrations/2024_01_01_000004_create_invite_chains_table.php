@@ -21,6 +21,7 @@ class CreateInviteChainsTable extends Migration
             $table->timestamp('rewarded_at')->nullable()->comment('奖励发放时间');
             $table->text('remark')->nullable()->comment('备注');
             $table->timestamps();
+            $table->softDeletes();
             $table->unique(['inviter_id', 'invitee_id']);
             $table->index('inviter_id');
             $table->index('invitee_id');
