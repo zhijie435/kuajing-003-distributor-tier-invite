@@ -71,21 +71,33 @@ class InviteChainController extends Controller
         $code = strtoupper(trim($request->input('code')));
         $inviteCode = InviteCode::where('code', $code)->first();
         if (!$inviteCode) {
-            return $this->error('邀请码不存在');
+            return $this->error('邀请码不存在，请检查输入是否正确', 404);
         }
+        $inviteCode->checkAndUpdateStatus();
         if (!$inviteCode->canUse()) {
-            return $this->error('邀请码不可用');
+            $reason = match ($inviteCode->status) {
+                InviteCode::STATUS_DISABLED => '邀请码已被禁用，请联系管理员',
+                InviteCode::STATUS_USED_UP => '邀请码已达使用上限，无法继续使用',
+                InviteCode::STATUS_EXPIRED => '邀请码已过期，请使用新的邀请码',
+                default => '邀请码不可用',
+            };
+            return $this->error($reason, 400, [
+                'status' => $inviteCode->status,
+                'status_label' => $inviteCode->getStatusLabel(),
+            ]);
         }
         $userId = $request->input('user_id');
         $user = User::find($userId);
         if (!$user) {
-            return $this->error('用户不存在');
+            return $this->error('用户不存在', 404);
         }
         if ($user->inviter_id) {
-            return $this->error('该用户已有邀请人，不能重复使用邀请码');
+            return $this->error('该用户已有邀请人，每位用户只能绑定一位邀请人', 400, [
+                'inviter_id' => $user->inviter_id,
+            ]);
         }
         if ($user->id == $inviteCode->owner_id) {
-            return $this->error('不能使用自己的邀请码');
+            return $this->error('不能使用自己的邀请码，请换一个邀请码试试', 400);
         }
         DB::beginTransaction();
         try {
@@ -116,13 +128,22 @@ class InviteChainController extends Controller
             DB::rollBack();
             return $this->error('邀请码使用失败：' . $e->getMessage(), 500);
         }
+        $user = $user->fresh()->load('dealerLevel');
+        $inviteCode = $inviteCode->fresh();
         return $this->success([
             'user_id' => $userId,
             'inviter_id' => $inviteCode->owner_id,
-            'invite_path' => $user->fresh()->invite_path,
+            'invite_path' => $user->invite_path,
             'target_level' => $inviteCode->targetDealerLevel ? [
                 'id' => $inviteCode->targetDealerLevel->id,
                 'name' => $inviteCode->targetDealerLevel->name,
+            ] : null,
+            'remaining_uses' => $inviteCode->remainingUses(),
+            'used_count' => $inviteCode->used_count,
+            'max_uses' => $inviteCode->max_uses,
+            'new_dealer_level' => $user->dealerLevel ? [
+                'id' => $user->dealerLevel->id,
+                'name' => $user->dealerLevel->name,
             ] : null,
         ], '邀请码使用成功');
     }

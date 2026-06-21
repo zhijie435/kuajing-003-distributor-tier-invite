@@ -285,16 +285,22 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="useCodeDialogVisible" title="使用邀请码" width="480px" destroy-on-close>
+    <el-dialog v-model="useCodeDialogVisible" title="使用邀请码" width="480px" destroy-on-close @open="onUseCodeDialogOpen">
       <el-form :model="useCodeForm" :rules="useCodeRules" ref="useCodeFormRef" label-width="100px">
         <el-form-item label="邀请码" prop="code">
           <el-input
+            ref="useCodeInputRef"
             v-model="useCodeForm.code"
             placeholder="输入8位邀请码"
             maxlength="8"
+            clearable
             style="text-transform:uppercase;letter-spacing:4px;font-family:monospace;font-size:18px"
+            @input="onCodeInput"
             @blur="validateCode"
           />
+          <div v-if="codeCheckError" style="color:#f56c6c;font-size:12px;margin-top:4px">
+            {{ codeCheckError }}
+          </div>
         </el-form-item>
         <div v-if="codeInfo" style="padding:16px;background:#f5f7fa;border-radius:8px;margin-bottom:16px">
           <div v-if="codeInfo.valid">
@@ -304,16 +310,19 @@
               <span style="font-weight:500">邀请人：{{ codeInfo.owner?.nickname || codeInfo.owner?.username }}</span>
             </div>
             <div v-if="codeInfo.target_level" style="font-size:13px;color:#606266;margin-bottom:6px">
-              注册可直接获得：<el-tag size="small" type="warning">{{ codeInfo.target_level.name }}</el-tag>
+              使用可直接获得：<el-tag size="small" type="warning">{{ codeInfo.target_level.name }}</el-tag>
             </div>
             <div style="font-size:13px;color:#606266">
               新用户奖励：<span style="color:#67c23a;font-weight:600">{{ formatMoney(codeInfo.new_user_bonus) }} 元</span>
               · 剩余：<span style="color:#409eff">{{ codeInfo.remaining_uses }}/{{ codeInfo.max_uses }}</span>
+              <span v-if="codeInfo.expires_at" style="margin-left:8px;color:#909399">
+                有效期至 {{ codeInfo.expires_at }}
+              </span>
             </div>
           </div>
           <div v-else>
             <el-tag type="danger" effect="dark">邀请码无效</el-tag>
-            <div style="margin-top:8px;font-size:13px;color:#f56c6c">{{ codeInfo.reason }}</div>
+            <div style="margin-top:8px;font-size:13px;color:#f56c6c">{{ codeInfo.reason || '未知原因' }}</div>
           </div>
         </div>
         <el-form-item label="被邀请用户" prop="user_id">
@@ -336,7 +345,7 @@
       </el-form>
       <template #footer>
         <el-button @click="useCodeDialogVisible = false">取消</el-button>
-        <el-button type="primary" :disabled="!codeInfo?.valid" @click="submitUseCode">确认使用</el-button>
+        <el-button type="primary" :loading="useCodeSubmitting" :disabled="!codeInfo?.valid || !useCodeForm.user_id" @click="submitUseCode">确认使用</el-button>
       </template>
     </el-dialog>
 
@@ -389,7 +398,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   Plus, Search, RefreshLeft, Tickets, Connection, DocumentCopy,
@@ -431,12 +440,16 @@ const batchRules = {
 
 const useCodeDialogVisible = ref(false)
 const useCodeFormRef = ref(null)
+const useCodeInputRef = ref(null)
 const useCodeForm = reactive({ code: '', user_id: '' })
 const useCodeRules = {
   code: [{ required: true, message: '请输入邀请码', trigger: 'blur' }],
   user_id: [{ required: true, message: '请选择被邀请用户', trigger: 'change' }]
 }
 const codeInfo = ref(null)
+const codeCheckError = ref('')
+const useCodeSubmitting = ref(false)
+let validateTimer = null
 
 const detailVisible = ref(false)
 const currentDetail = ref(null)
@@ -561,12 +574,11 @@ const submitCreate = async () => {
     const res = await inviteCodeApi.create(createForm)
     ElMessage.success(`邀请码 ${res.data?.code || '生成'} 创建成功`)
     createDialogVisible.value = false
-    loadList()
-    loadStats()
+    await Promise.all([loadList(), loadStats()])
   } catch {
     ElMessage.success('邀请码创建成功（模拟）')
     createDialogVisible.value = false
-    loadList()
+    await Promise.all([loadList(), loadStats()])
   }
 }
 
@@ -584,12 +596,11 @@ const submitBatch = async () => {
     const res = await inviteCodeApi.batchCreate(batchForm)
     ElMessage.success(`成功生成 ${res.data?.count || batchForm.count} 个邀请码`)
     batchDialogVisible.value = false
-    loadList()
-    loadStats()
+    await Promise.all([loadList(), loadStats()])
   } catch {
     ElMessage.success(`成功生成 ${batchForm.count} 个邀请码（模拟）`)
     batchDialogVisible.value = false
-    loadList()
+    await Promise.all([loadList(), loadStats()])
   }
 }
 
@@ -597,42 +608,96 @@ const openUseCodeDialog = () => {
   useCodeForm.code = ''
   useCodeForm.user_id = ''
   codeInfo.value = null
+  codeCheckError.value = ''
+  useCodeSubmitting.value = false
+  clearValidateTimer()
   useCodeDialogVisible.value = true
+}
+
+const onUseCodeDialogOpen = () => {
+  nextTick(() => {
+    useCodeInputRef.value?.focus()
+  })
+}
+
+const clearValidateTimer = () => {
+  if (validateTimer) {
+    clearTimeout(validateTimer)
+    validateTimer = null
+  }
+}
+
+const onCodeInput = (val) => {
+  useCodeForm.code = val.toUpperCase().replace(/[^A-Z0-9]/g, '')
+  codeCheckError.value = ''
+  clearValidateTimer()
+  if (useCodeForm.code.length === 8) {
+    validateTimer = setTimeout(() => {
+      validateCode()
+    }, 300)
+  } else {
+    codeInfo.value = null
+  }
 }
 
 const validateCode = async () => {
   if (!useCodeForm.code) {
     codeInfo.value = null
+    codeCheckError.value = ''
+    return
+  }
+  if (useCodeForm.code.length < 8) {
+    codeInfo.value = { valid: false, reason: '邀请码格式不正确（应为8位字母数字）' }
+    codeCheckError.value = '邀请码格式不正确'
     return
   }
   try {
     const res = await inviteCodeApi.check({ code: useCodeForm.code })
     codeInfo.value = res.data
-  } catch {
-    codeInfo.value = {
-      valid: useCodeForm.code.length === 8,
-      reason: useCodeForm.code.length === 8 ? '' : '邀请码格式不正确（应为8位）',
-      owner: useCodeForm.code.length === 8 ? { nickname: '邀请人A', avatar: '' } : null,
-      target_level: useCodeForm.code.length === 8 ? { name: '银牌经销商' } : null,
-      new_user_bonus: 200,
-      remaining_uses: 5,
-      max_uses: 10
-    }
+    codeCheckError.value = res.data?.valid ? '' : (res.data?.reason || '邀请码无效')
+  } catch (err) {
+    const msg = err?.message || err?.response?.data?.message || '邀请码校验失败'
+    codeInfo.value = { valid: false, reason: msg }
+    codeCheckError.value = msg
   }
 }
 
 const submitUseCode = async () => {
-  await useCodeFormRef.value?.validate()
+  if (!useCodeForm.code) {
+    codeCheckError.value = '请输入邀请码'
+    return
+  }
+  if (!useCodeForm.user_id) {
+    ElMessage.warning('请选择被邀请用户')
+    return
+  }
+  if (!codeInfo.value?.valid) {
+    ElMessage.warning('邀请码不可用，请检查')
+    return
+  }
+  useCodeSubmitting.value = true
   try {
-    await inviteChainApi.useCode(useCodeForm)
-    ElMessage.success('邀请码使用成功')
+    const res = await inviteChainApi.useCode(useCodeForm)
+    ElMessage.success(`邀请码使用成功，已与 ${res.data?.target_level?.name || '对应等级'} 绑定`)
+    if (res.data) {
+      codeInfo.value = {
+        ...codeInfo.value,
+        remaining_uses: res.data.remaining_uses ?? codeInfo.value.remaining_uses,
+        used_count: res.data.used_count ?? codeInfo.value.used_count,
+      }
+      if ((res.data.remaining_uses ?? 1) <= 0) {
+        codeInfo.value.valid = false
+        codeInfo.value.reason = '邀请码已达使用上限'
+      }
+    }
     useCodeDialogVisible.value = false
-    loadList()
-    loadStats()
-  } catch {
-    ElMessage.success('邀请码使用成功（模拟）')
-    useCodeDialogVisible.value = false
-    loadList()
+    await Promise.all([loadList(), loadStats()])
+  } catch (err) {
+    try {
+      await validateCode()
+    } catch {}
+  } finally {
+    useCodeSubmitting.value = false
   }
 }
 
@@ -648,23 +713,30 @@ const viewDetail = async (row) => {
 
 const toggleStatus = async (row) => {
   try {
-    await inviteCodeApi.toggle(row.id)
+    const res = await inviteCodeApi.toggle(row.id)
+    if (res?.data) {
+      const idx = list.value.findIndex(i => i.id === row.id)
+      if (idx > -1) list.value.splice(idx, 1, { ...list.value[idx], ...res.data })
+    }
     ElMessage.success('状态切换成功')
-    loadList()
+    await Promise.all([loadList(), loadStats()])
   } catch {
     row.status = row.status === 1 ? 0 : 1
     ElMessage.success('状态切换成功（模拟）')
+    loadStats()
   }
 }
 
 const removeCode = async (row) => {
   try {
     await inviteCodeApi.remove(row.id)
+    list.value = list.value.filter(i => i.id !== row.id)
     ElMessage.success('删除成功')
-    loadList()
+    await Promise.all([loadList(), loadStats()])
   } catch {
     list.value = list.value.filter(i => i.id !== row.id)
     ElMessage.success('删除成功（模拟）')
+    loadStats()
   }
 }
 
