@@ -12,25 +12,46 @@ use Illuminate\Support\Facades\Validator;
 
 class UpgradeRecordController extends Controller
 {
+    private const SORT_ALLOWED = [
+        'created_at', 'updated_at', 'achievement_at_upgrade', 'reward_bonus',
+        'status', 'reviewed_at', 'rewarded_at', 'upgrade_type', 'id',
+    ];
+
     public function index(Request $request)
     {
-        $query = UpgradeRecord::with(['user', 'oldLevel', 'newLevel', 'operator', 'inviteCode', 'reviewer']);
-        if ($request->has('user_id')) {
-            $query->byUser($request->input('user_id'));
+        if ($denied = $this->requireAuth($request)) {
+            return $denied;
         }
+
+        $currentId = $this->currentUserId($request);
+        $isAdmin = $this->isAdmin($request);
+
+        $query = UpgradeRecord::with(['user', 'oldLevel', 'newLevel', 'operator', 'inviteCode', 'reviewer']);
+
+        if ($request->has('user_id')) {
+            $userId = (int)$request->input('user_id');
+            if (!$isAdmin && $userId !== $currentId) {
+                return $this->error('无权限查询该用户的升级记录', 403);
+            }
+            $query->byUser($userId);
+        } elseif (!$isAdmin) {
+            $query->byUser($currentId);
+        }
+
         if ($request->has('upgrade_type')) {
             $type = $request->input('upgrade_type');
             if (is_array($type)) {
+                $type = array_map('intval', $type);
                 $query->whereIn('upgrade_type', $type);
             } else {
-                $query->byType($type);
+                $query->byType((int)$type);
             }
         }
         if ($request->has('new_level_id')) {
-            $query->where('new_level_id', $request->input('new_level_id'));
+            $query->where('new_level_id', (int)$request->input('new_level_id'));
         }
         if ($request->has('old_level_id')) {
-            $query->where('old_level_id', $request->input('old_level_id'));
+            $query->where('old_level_id', (int)$request->input('old_level_id'));
         }
         if ($request->has('is_rewarded')) {
             $query->where('is_rewarded', $request->boolean('is_rewarded'));
@@ -50,7 +71,11 @@ class UpgradeRecordController extends Controller
             $query->notRejected();
         }
         if ($request->has('start_date') && $request->has('end_date')) {
-            $query->inDateRange($request->input('start_date'), $request->input('end_date'));
+            $startDate = (string)$request->input('start_date');
+            $endDate = (string)$request->input('end_date');
+            if ($startDate !== '' && $endDate !== '') {
+                $query->inDateRange($startDate, $endDate);
+            }
         }
         if ($request->has('keyword')) {
             $keyword = '%' . $request->input('keyword') . '%';
@@ -61,22 +86,41 @@ class UpgradeRecordController extends Controller
                 })->orWhere('remark', 'like', $keyword);
             });
         }
-        $sortField = $request->input('sort_by', 'created_at');
-        $sortOrder = $request->input('sort_order', 'desc');
-        $query->orderBy($sortField, $sortOrder);
-        return $this->paginated(
-            $query,
-            $request->input('page', 1),
-            $request->input('page_size', 20)
+
+        [$sortField, $sortOrder] = $this->sanitizeSort(
+            (string)$request->input('sort_by', 'created_at'),
+            (string)$request->input('sort_order', 'desc'),
+            self::SORT_ALLOWED
         );
+        $query->orderBy($sortField, $sortOrder);
+
+        try {
+            return $this->paginated(
+                $query,
+                (int)$request->input('page', 1),
+                (int)$request->input('page_size', 20)
+            );
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('查询升级记录列表失败，请稍后重试', 500);
+        }
     }
 
-    public function show($id)
+    public function show(Request $request, $id)
     {
-        $record = UpgradeRecord::with(['user', 'oldLevel', 'newLevel', 'operator', 'inviteCode', 'reviewer'])->find($id);
+        if ($denied = $this->requireAuth($request)) {
+            return $denied;
+        }
+
+        $record = UpgradeRecord::with(['user', 'oldLevel', 'newLevel', 'operator', 'inviteCode', 'reviewer'])->find((int)$id);
         if (!$record) {
             return $this->error('升级记录不存在', 404);
         }
+
+        if (!$this->isAdmin($request) && (int)$record->user_id !== $this->currentUserId($request)) {
+            return $this->error('无权限查看该升级记录', 403);
+        }
+
         $data = $record->toArray();
         $data['status_label'] = $record->getStatusLabel();
         $data['status_tag_type'] = $record->getStatusTagType();
@@ -91,14 +135,29 @@ class UpgradeRecordController extends Controller
 
     public function userHistory(Request $request, $userId)
     {
-        $user = User::find($userId);
+        if ($denied = $this->requireAuth($request)) {
+            return $denied;
+        }
+
+        $targetUserId = (int)$userId;
+        if ($denied = $this->checkDataScope($request, $targetUserId, '无权限查看该用户的升级历史')) {
+            return $denied;
+        }
+
+        $user = User::find($targetUserId);
         if (!$user) {
             return $this->error('用户不存在', 404);
         }
-        $limit = $request->input('limit', 20);
-        $records = UpgradeRecord::getUserUpgradeHistory($userId, $limit);
-        $currentLevel = $user->dealerLevel;
-        $eligibleLevel = $user->findEligibleLevel();
+        $limit = (int)$request->input('limit', 20);
+        $limit = min(100, max(1, $limit));
+        try {
+            $records = UpgradeRecord::getUserUpgradeHistory($targetUserId, $limit);
+            $currentLevel = $user->dealerLevel;
+            $eligibleLevel = $user->findEligibleLevel();
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('查询升级历史失败，请稍后重试', 500);
+        }
         return $this->success([
             'user' => [
                 'id' => $user->id,
@@ -126,6 +185,10 @@ class UpgradeRecordController extends Controller
 
     public function manualUpgrade(Request $request)
     {
+        if ($denied = $this->requireAdmin($request)) {
+            return $denied;
+        }
+
         $validator = Validator::make($request->all(), [
             'user_id' => 'required|integer|exists:users,id',
             'new_level_id' => 'required|integer|exists:dealer_levels,id',
@@ -136,25 +199,33 @@ class UpgradeRecordController extends Controller
         if ($validator->fails()) {
             return $this->error('参数验证失败', 422, $validator->errors());
         }
-        $userId = $request->input('user_id');
-        $newLevelId = $request->input('new_level_id');
+        $userId = (int)$request->input('user_id');
+        $newLevelId = (int)$request->input('new_level_id');
         $user = User::find($userId);
+        if (!$user) {
+            return $this->error('用户不存在', 404);
+        }
         $oldLevelId = $user->dealer_level_id;
         if ($oldLevelId == $newLevelId) {
             return $this->error('新等级与当前等级相同');
         }
-        $record = UpgradeRecord::recordUpgrade(
-            $userId,
-            $oldLevelId,
-            $newLevelId,
-            UpgradeRecord::TYPE_ADMIN,
-            $request->input('reward_bonus'),
-            $request->input('operator_id'),
-            null,
-            $request->input('remark')
-        );
-        if (!$record) {
-            return $this->error('升级失败');
+        try {
+            $record = UpgradeRecord::recordUpgrade(
+                $userId,
+                $oldLevelId,
+                $newLevelId,
+                UpgradeRecord::TYPE_ADMIN,
+                $request->filled('reward_bonus') ? (float)$request->input('reward_bonus') : null,
+                $request->filled('operator_id') ? (int)$request->input('operator_id') : null,
+                null,
+                $request->input('remark')
+            );
+            if (!$record) {
+                return $this->error('升级失败，等级未发生变化');
+            }
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('升级操作失败，请稍后重试', 500);
         }
         return $this->success(
             $record->load(['user', 'oldLevel', 'newLevel', 'operator']),
@@ -165,6 +236,10 @@ class UpgradeRecordController extends Controller
 
     public function checkAutoUpgrade(Request $request)
     {
+        if ($denied = $this->requireAdmin($request)) {
+            return $denied;
+        }
+
         $validator = Validator::make($request->all(), [
             'user_ids' => 'nullable|array',
             'user_ids.*' => 'integer|exists:users,id',
@@ -176,9 +251,15 @@ class UpgradeRecordController extends Controller
         $dryRun = $request->boolean('dry_run', false);
         $query = User::with('dealerLevel');
         if ($request->has('user_ids')) {
-            $query->whereIn('id', $request->input('user_ids'));
+            $ids = array_map('intval', $request->input('user_ids'));
+            $query->whereIn('id', $ids);
         }
-        $users = $query->get();
+        try {
+            $users = $query->get();
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('加载用户数据失败，请稍后重试', 500);
+        }
         $results = [
             'checked_count' => 0,
             'upgraded_count' => 0,
@@ -186,8 +267,8 @@ class UpgradeRecordController extends Controller
             'upgrades' => [],
             'skipped' => [],
         ];
-        DB::beginTransaction();
         try {
+            DB::beginTransaction();
             foreach ($users as $user) {
                 $results['checked_count']++;
                 $eligibleLevel = $user->findEligibleLevel();
@@ -248,9 +329,10 @@ class UpgradeRecordController extends Controller
             } else {
                 DB::rollBack();
             }
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             DB::rollBack();
-            return $this->error('自动升级检查失败：' . $e->getMessage(), 500);
+            $this->safeLogException($e);
+            return $this->error('自动升级检查失败，请稍后重试', 500);
         }
         $results['dry_run'] = $dryRun;
         return $this->success($results, $dryRun ? '预检查完成' : '自动升级检查完成');
@@ -258,7 +340,11 @@ class UpgradeRecordController extends Controller
 
     public function markRewarded(Request $request, $id)
     {
-        $record = UpgradeRecord::find($id);
+        if ($denied = $this->requireAdmin($request)) {
+            return $denied;
+        }
+
+        $record = UpgradeRecord::find((int)$id);
         if (!$record) {
             return $this->error('升级记录不存在', 404);
         }
@@ -278,15 +364,24 @@ class UpgradeRecordController extends Controller
         if ($validator->fails()) {
             return $this->error('参数验证失败', 422, $validator->errors());
         }
-        $record->markRewarded(
-            $request->input('operator_id'),
-            $request->input('remark')
-        );
+        try {
+            $record->markRewarded(
+                $request->filled('operator_id') ? (int)$request->input('operator_id') : null,
+                $request->input('remark')
+            );
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('奖励发放失败，请稍后重试', 500);
+        }
         return $this->success($record->load(['reviewer']), '奖励已发放');
     }
 
     public function batchMarkRewarded(Request $request)
     {
+        if ($denied = $this->requireAdmin($request)) {
+            return $denied;
+        }
+
         $validator = Validator::make($request->all(), [
             'record_ids' => 'required|array|min:1',
             'record_ids.*' => 'integer|exists:upgrade_records,id',
@@ -296,24 +391,33 @@ class UpgradeRecordController extends Controller
         if ($validator->fails()) {
             return $this->error('参数验证失败', 422, $validator->errors());
         }
-        $operatorId = $request->input('operator_id');
+        $operatorId = $request->filled('operator_id') ? (int)$request->input('operator_id') : null;
         $remark = $request->input('remark');
-        $records = UpgradeRecord::whereIn('id', $request->input('record_ids'))
-            ->where('is_rewarded', false)
-            ->where('reward_bonus', '>', 0)
-            ->where('status', '!=', UpgradeRecord::STATUS_REJECTED)
-            ->get();
-        $count = 0;
-        foreach ($records as $record) {
-            if ($record->markRewarded($operatorId, $remark)) {
-                $count++;
+        try {
+            $records = UpgradeRecord::whereIn('id', $request->input('record_ids'))
+                ->where('is_rewarded', false)
+                ->where('reward_bonus', '>', 0)
+                ->where('status', '!=', UpgradeRecord::STATUS_REJECTED)
+                ->get();
+            $count = 0;
+            foreach ($records as $record) {
+                if ($record->markRewarded($operatorId, $remark)) {
+                    $count++;
+                }
             }
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('批量发放升级奖励失败，请稍后重试', 500);
         }
         return $this->success(['updated_count' => $count], "成功发放{$count}条升级奖励");
     }
 
     public function markAllPendingRewarded(Request $request)
     {
+        if ($denied = $this->requireAdmin($request)) {
+            return $denied;
+        }
+
         $validator = Validator::make($request->all(), [
             'operator_id' => 'nullable|integer|exists:users,id',
             'remark' => 'nullable|string|max:500',
@@ -321,24 +425,33 @@ class UpgradeRecordController extends Controller
         if ($validator->fails()) {
             return $this->error('参数验证失败', 422, $validator->errors());
         }
-        $operatorId = $request->input('operator_id');
+        $operatorId = $request->filled('operator_id') ? (int)$request->input('operator_id') : null;
         $remark = $request->input('remark');
-        $records = UpgradeRecord::unrewarded()
-            ->reward()
-            ->where('status', '!=', UpgradeRecord::STATUS_REJECTED)
-            ->get();
-        $count = 0;
-        foreach ($records as $record) {
-            if ($record->markRewarded($operatorId, $remark ?: '批量发放全部待处理奖励')) {
-                $count++;
+        try {
+            $records = UpgradeRecord::unrewarded()
+                ->reward()
+                ->where('status', '!=', UpgradeRecord::STATUS_REJECTED)
+                ->get();
+            $count = 0;
+            foreach ($records as $record) {
+                if ($record->markRewarded($operatorId, $remark ?: '批量发放全部待处理奖励')) {
+                    $count++;
+                }
             }
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('发放全部待处理奖励失败，请稍后重试', 500);
         }
         return $this->success(['updated_count' => $count], "成功发放所有待处理的{$count}条升级奖励");
     }
 
     public function approve(Request $request, $id)
     {
-        $record = UpgradeRecord::find($id);
+        if ($denied = $this->requireAdmin($request)) {
+            return $denied;
+        }
+
+        $record = UpgradeRecord::find((int)$id);
         if (!$record) {
             return $this->error('升级记录不存在', 404);
         }
@@ -352,16 +465,25 @@ class UpgradeRecordController extends Controller
         if ($validator->fails()) {
             return $this->error('参数验证失败', 422, $validator->errors());
         }
-        $record->approve(
-            $request->input('reviewer_id'),
-            $request->input('remark')
-        );
+        try {
+            $record->approve(
+                $request->filled('reviewer_id') ? (int)$request->input('reviewer_id') : null,
+                $request->input('remark')
+            );
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('审核通过失败，请稍后重试', 500);
+        }
         return $this->success($record->fresh()->load(['reviewer']), '审核通过');
     }
 
     public function reject(Request $request, $id)
     {
-        $record = UpgradeRecord::find($id);
+        if ($denied = $this->requireAdmin($request)) {
+            return $denied;
+        }
+
+        $record = UpgradeRecord::find((int)$id);
         if (!$record) {
             return $this->error('升级记录不存在', 404);
         }
@@ -375,15 +497,24 @@ class UpgradeRecordController extends Controller
         if ($validator->fails()) {
             return $this->error('参数验证失败', 422, $validator->errors());
         }
-        $record->reject(
-            $request->input('reviewer_id'),
-            $request->input('remark')
-        );
+        try {
+            $record->reject(
+                $request->filled('reviewer_id') ? (int)$request->input('reviewer_id') : null,
+                $request->input('remark')
+            );
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('审核拒绝失败，请稍后重试', 500);
+        }
         return $this->success($record->fresh()->load(['reviewer']), '审核拒绝');
     }
 
     public function batchApprove(Request $request)
     {
+        if ($denied = $this->requireAdmin($request)) {
+            return $denied;
+        }
+
         $validator = Validator::make($request->all(), [
             'record_ids' => 'required|array|min:1',
             'record_ids.*' => 'integer|exists:upgrade_records,id',
@@ -393,22 +524,31 @@ class UpgradeRecordController extends Controller
         if ($validator->fails()) {
             return $this->error('参数验证失败', 422, $validator->errors());
         }
-        $reviewerId = $request->input('reviewer_id');
+        $reviewerId = $request->filled('reviewer_id') ? (int)$request->input('reviewer_id') : null;
         $remark = $request->input('remark');
-        $records = UpgradeRecord::whereIn('id', $request->input('record_ids'))
-            ->pending()
-            ->get();
-        $count = 0;
-        foreach ($records as $record) {
-            if ($record->approve($reviewerId, $remark ?: '批量审核通过')) {
-                $count++;
+        try {
+            $records = UpgradeRecord::whereIn('id', $request->input('record_ids'))
+                ->pending()
+                ->get();
+            $count = 0;
+            foreach ($records as $record) {
+                if ($record->approve($reviewerId, $remark ?: '批量审核通过')) {
+                    $count++;
+                }
             }
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('批量审核通过失败，请稍后重试', 500);
         }
         return $this->success(['updated_count' => $count], "成功审核通过{$count}条升级记录");
     }
 
     public function batchReject(Request $request)
     {
+        if ($denied = $this->requireAdmin($request)) {
+            return $denied;
+        }
+
         $validator = Validator::make($request->all(), [
             'record_ids' => 'required|array|min:1',
             'record_ids.*' => 'integer|exists:upgrade_records,id',
@@ -418,48 +558,92 @@ class UpgradeRecordController extends Controller
         if ($validator->fails()) {
             return $this->error('参数验证失败', 422, $validator->errors());
         }
-        $reviewerId = $request->input('reviewer_id');
+        $reviewerId = $request->filled('reviewer_id') ? (int)$request->input('reviewer_id') : null;
         $remark = $request->input('remark');
-        $records = UpgradeRecord::whereIn('id', $request->input('record_ids'))
-            ->pending()
-            ->get();
-        $count = 0;
-        foreach ($records as $record) {
-            if ($record->reject($reviewerId, $remark)) {
-                $count++;
+        try {
+            $records = UpgradeRecord::whereIn('id', $request->input('record_ids'))
+                ->pending()
+                ->get();
+            $count = 0;
+            foreach ($records as $record) {
+                if ($record->reject($reviewerId, $remark)) {
+                    $count++;
+                }
             }
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('批量审核拒绝失败，请稍后重试', 500);
         }
         return $this->success(['updated_count' => $count], "成功审核拒绝{$count}条升级记录");
     }
 
     public function stats(Request $request)
     {
+        if ($denied = $this->requireAuth($request)) {
+            return $denied;
+        }
+
         $filters = [];
-        if ($request->has('start_date') && $request->has('end_date')) {
-            $filters['start_date'] = $request->input('start_date');
-            $filters['end_date'] = $request->input('end_date');
+        $startDate = (string)$request->input('start_date', '');
+        $endDate = (string)$request->input('end_date', '');
+        if ($startDate !== '' && $endDate !== '') {
+            $filters['start_date'] = $startDate;
+            $filters['end_date'] = $endDate;
         }
         if ($request->has('upgrade_type')) {
             $filters['upgrade_type'] = $request->input('upgrade_type');
         }
-        $stats = UpgradeRecord::getUpgradeStats($filters);
-        $pendingRewardsTotal = UpgradeRecord::unrewarded()->reward()->sum('reward_bonus');
-        $levelUpgradeStats = UpgradeRecord::select(
-            'new_level_id',
-            DB::raw('COUNT(*) as count'),
-            DB::raw('COALESCE(SUM(reward_bonus), 0) as total_bonus')
-        )
-        ->groupBy('new_level_id')
-        ->with('newLevel')
-        ->get()
-        ->map(function ($item) {
-            return [
-                'level_id' => $item->new_level_id,
-                'level_name' => $item->newLevel ? $item->newLevel->name : '未知',
-                'upgrade_count' => $item->count,
-                'total_bonus' => (float)$item->total_bonus,
-            ];
-        });
+
+        $isAdmin = $this->isAdmin($request);
+        $currentId = $this->currentUserId($request);
+        if (!$isAdmin) {
+            $filters['user_id'] = $currentId;
+        }
+
+        try {
+            $statsQuery = UpgradeRecord::query();
+            if (!empty($filters['start_date']) && !empty($filters['end_date'])) {
+                $statsQuery->inDateRange($filters['start_date'], $filters['end_date']);
+            }
+            if (!empty($filters['upgrade_type'])) {
+                $statsQuery->byType((int)$filters['upgrade_type']);
+            }
+            if (!$isAdmin) {
+                $statsQuery->byUser($currentId);
+            }
+
+            $stats = UpgradeRecord::getUpgradeStats($filters);
+
+            $pendingRewardsQuery = UpgradeRecord::unrewarded()->reward();
+            if (!$isAdmin) {
+                $pendingRewardsQuery->byUser($currentId);
+            }
+            $pendingRewardsTotal = $pendingRewardsQuery->sum('reward_bonus');
+
+            $levelStatsQuery = UpgradeRecord::select(
+                'new_level_id',
+                DB::raw('COUNT(*) as count'),
+                DB::raw('COALESCE(SUM(reward_bonus), 0) as total_bonus')
+            );
+            if (!$isAdmin) {
+                $levelStatsQuery->byUser($currentId);
+            }
+            $levelUpgradeStats = $levelStatsQuery
+                ->groupBy('new_level_id')
+                ->with('newLevel')
+                ->get()
+                ->map(function ($item) {
+                    return [
+                        'level_id' => $item->new_level_id,
+                        'level_name' => $item->newLevel ? $item->newLevel->name : '未知',
+                        'upgrade_count' => $item->count,
+                        'total_bonus' => (float)$item->total_bonus,
+                    ];
+                });
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('查询升级统计失败，请稍后重试', 500);
+        }
         return $this->success([
             'filters' => $filters,
             'overall' => $stats,

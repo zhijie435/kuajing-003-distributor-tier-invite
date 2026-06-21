@@ -13,21 +13,53 @@ use Illuminate\Support\Facades\Validator;
 
 class InviteChainController extends Controller
 {
+    private const SORT_ALLOWED = [
+        'created_at', 'updated_at', 'depth', 'reward_amount', 'total_commission',
+        'status', 'confirmed_at', 'cancelled_at', 'rewarded_at', 'id',
+    ];
+
     public function index(Request $request)
     {
+        if ($denied = $this->requireAuth($request)) {
+            return $denied;
+        }
+
+        $currentId = $this->currentUserId($request);
+        $isAdmin = $this->isAdmin($request);
+
         $query = InviteChain::with(['inviter', 'invitee', 'inviteCode', 'operator']);
+
+        $scopedToSelf = false;
         if ($request->has('inviter_id')) {
-            $query->where('inviter_id', $request->input('inviter_id'));
+            $inviterId = (int)$request->input('inviter_id');
+            if (!$isAdmin && $inviterId !== $currentId) {
+                return $this->error('无权限按该邀请人查询', 403);
+            }
+            $query->where('inviter_id', $inviterId);
+            $scopedToSelf = $scopedToSelf || ($inviterId === $currentId);
         }
         if ($request->has('invitee_id')) {
-            $query->where('invitee_id', $request->input('invitee_id'));
+            $inviteeId = (int)$request->input('invitee_id');
+            if (!$isAdmin && $inviteeId !== $currentId) {
+                return $this->error('无权限按该被邀请人查询', 403);
+            }
+            $query->where('invitee_id', $inviteeId);
+            $scopedToSelf = $scopedToSelf || ($inviteeId === $currentId);
         }
+        if (!$isAdmin && !$scopedToSelf) {
+            $query->where(function ($q) use ($currentId) {
+                $q->where('inviter_id', $currentId)
+                  ->orWhere('invitee_id', $currentId);
+            });
+        }
+
         if ($request->has('depth')) {
             $depth = $request->input('depth');
             if (is_array($depth)) {
+                $depth = array_map('intval', $depth);
                 $query->whereIn('depth', $depth);
             } else {
-                $query->where('depth', $depth);
+                $query->where('depth', (int)$depth);
             }
         }
         if ($request->has('is_direct')) {
@@ -59,22 +91,44 @@ class InviteChainController extends Controller
                 })->orWhere('remark', 'like', $keyword);
             });
         }
-        $sortField = $request->input('sort_by', 'created_at');
-        $sortOrder = $request->input('sort_order', 'desc');
-        $query->orderBy($sortField, $sortOrder);
-        return $this->paginated(
-            $query,
-            $request->input('page', 1),
-            $request->input('page_size', 20)
+
+        [$sortField, $sortOrder] = $this->sanitizeSort(
+            (string)$request->input('sort_by', 'created_at'),
+            (string)$request->input('sort_order', 'desc'),
+            self::SORT_ALLOWED
         );
+        $query->orderBy($sortField, $sortOrder);
+
+        try {
+            return $this->paginated(
+                $query,
+                (int)$request->input('page', 1),
+                (int)$request->input('page_size', 20)
+            );
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('查询邀请记录列表失败，请稍后重试', 500);
+        }
     }
 
-    public function show($id)
+    public function show(Request $request, $id)
     {
-        $chain = InviteChain::with(['inviter', 'invitee.dealerLevel', 'inviteCode', 'operator'])->find($id);
+        if ($denied = $this->requireAuth($request)) {
+            return $denied;
+        }
+
+        $chain = InviteChain::with(['inviter', 'invitee.dealerLevel', 'inviteCode', 'operator'])->find((int)$id);
         if (!$chain) {
             return $this->error('邀请记录不存在', 404);
         }
+
+        $currentId = $this->currentUserId($request);
+        if (!$this->isAdmin($request)
+            && (int)$chain->inviter_id !== $currentId
+            && (int)$chain->invitee_id !== $currentId) {
+            return $this->error('无权限查看该邀请记录', 403);
+        }
+
         $data = $chain->toArray();
         $data['status_label'] = $chain->getStatusLabel();
         $data['status_tag_type'] = $chain->getStatusTagType();
@@ -94,12 +148,24 @@ class InviteChainController extends Controller
         if ($validator->fails()) {
             return $this->error('参数验证失败', 422, $validator->errors());
         }
-        $code = strtoupper(trim($request->input('code')));
-        $inviteCode = InviteCode::where('code', $code)->first();
+        $code = strtoupper(trim((string)$request->input('code')));
+        if ($code === '') {
+            return $this->error('邀请码不能为空', 422);
+        }
+        try {
+            $inviteCode = InviteCode::where('code', $code)->first();
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('邀请码校验失败，请稍后重试', 500);
+        }
         if (!$inviteCode) {
             return $this->error('邀请码不存在，请检查输入是否正确', 404);
         }
-        $inviteCode->checkAndUpdateStatus();
+        try {
+            $inviteCode->checkAndUpdateStatus();
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+        }
         if (!$inviteCode->canUse()) {
             $reason = match ($inviteCode->status) {
                 InviteCode::STATUS_DISABLED => '邀请码已被禁用，请联系管理员',
@@ -112,7 +178,7 @@ class InviteChainController extends Controller
                 'status_label' => $inviteCode->getStatusLabel(),
             ]);
         }
-        $userId = $request->input('user_id');
+        $userId = (int)$request->input('user_id');
         $user = User::find($userId);
         if (!$user) {
             return $this->error('用户不存在', 404);
@@ -125,8 +191,8 @@ class InviteChainController extends Controller
         if ($user->id == $inviteCode->owner_id) {
             return $this->error('不能使用自己的邀请码，请换一个邀请码试试', 400);
         }
-        DB::beginTransaction();
         try {
+            DB::beginTransaction();
             $user->inviter_id = $inviteCode->owner_id;
             $user->save();
             InviteChain::createInviteChain(
@@ -145,14 +211,16 @@ class InviteChainController extends Controller
                     UpgradeRecord::TYPE_INVITE_CODE,
                     null,
                     null,
+                    null,
                     $inviteCode->id,
                     '使用邀请码升级'
                 );
             }
             DB::commit();
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             DB::rollBack();
-            return $this->error('邀请码使用失败：' . $e->getMessage(), 500);
+            $this->safeLogException($e);
+            return $this->error('邀请码使用失败，请稍后重试', 500);
         }
         $user = $user->fresh()->load('dealerLevel');
         $inviteCode = $inviteCode->fresh();
@@ -176,6 +244,10 @@ class InviteChainController extends Controller
 
     public function createDirectInvite(Request $request)
     {
+        if ($denied = $this->requireAdmin($request)) {
+            return $denied;
+        }
+
         $validator = Validator::make($request->all(), [
             'inviter_id' => 'required|integer|exists:users,id',
             'invitee_id' => 'required|integer|exists:users,id',
@@ -184,63 +256,84 @@ class InviteChainController extends Controller
         if ($validator->fails()) {
             return $this->error('参数验证失败', 422, $validator->errors());
         }
-        $inviterId = $request->input('inviter_id');
-        $inviteeId = $request->input('invitee_id');
+        $inviterId = (int)$request->input('inviter_id');
+        $inviteeId = (int)$request->input('invitee_id');
         if ($inviterId == $inviteeId) {
             return $this->error('邀请人和被邀请人不能相同');
         }
         $invitee = User::find($inviteeId);
+        if (!$invitee) {
+            return $this->error('被邀请人不存在', 404);
+        }
         if ($invitee->inviter_id) {
             return $this->error('被邀请人已有邀请人');
         }
-        DB::beginTransaction();
         try {
+            DB::beginTransaction();
             $invitee->inviter_id = $inviterId;
             $invitee->save();
             $chain = InviteChain::createInviteChain(
                 $inviterId,
                 $inviteeId,
-                $request->input('invite_code_id')
+                $request->filled('invite_code_id') ? (int)$request->input('invite_code_id') : null
             );
             DB::commit();
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             DB::rollBack();
-            return $this->error('创建邀请关系失败：' . $e->getMessage(), 500);
+            $this->safeLogException($e);
+            return $this->error('创建邀请关系失败，请稍后重试', 500);
         }
         return $this->success($chain, '邀请关系创建成功', 201);
     }
 
-    public function getInviterLineage($userId)
+    public function getInviterLineage(Request $request, $userId)
     {
-        $user = User::with('inviter.dealerLevel')->find($userId);
+        if ($denied = $this->requireAuth($request)) {
+            return $denied;
+        }
+
+        $targetUserId = (int)$userId;
+        if ($denied = $this->checkDataScope($request, $targetUserId, '无权限查看该用户的邀请链路')) {
+            return $denied;
+        }
+
+        $user = User::with('inviter.dealerLevel')->find($targetUserId);
         if (!$user) {
             return $this->error('用户不存在', 404);
         }
         $lineage = [];
         $currentUser = $user;
         $depth = 0;
-        while ($currentUser && $currentUser->inviter) {
-            $depth++;
-            $inviter = $currentUser->inviter;
-            $lineage[] = [
-                'depth' => $depth,
-                'user_id' => $inviter->id,
-                'username' => $inviter->username,
-                'nickname' => $inviter->nickname,
-                'avatar' => $inviter->avatar,
-                'dealer_level' => $inviter->dealerLevel ? [
-                    'id' => $inviter->dealerLevel->id,
-                    'name' => $inviter->dealerLevel->name,
-                    'level' => $inviter->dealerLevel->level,
-                ] : null,
-                'total_achievement' => $inviter->total_achievement,
-                'total_invite_count' => $inviter->total_invite_count,
-            ];
-            $currentUser = $inviter;
-            $currentUser->load('inviter.dealerLevel');
+        try {
+            while ($currentUser && $currentUser->inviter) {
+                $depth++;
+                $inviter = $currentUser->inviter;
+                $lineage[] = [
+                    'depth' => $depth,
+                    'user_id' => $inviter->id,
+                    'username' => $inviter->username,
+                    'nickname' => $inviter->nickname,
+                    'avatar' => $inviter->avatar,
+                    'dealer_level' => $inviter->dealerLevel ? [
+                        'id' => $inviter->dealerLevel->id,
+                        'name' => $inviter->dealerLevel->name,
+                        'level' => $inviter->dealerLevel->level,
+                    ] : null,
+                    'total_achievement' => $inviter->total_achievement,
+                    'total_invite_count' => $inviter->total_invite_count,
+                ];
+                $currentUser = $inviter;
+                $currentUser->load('inviter.dealerLevel');
+                if ($depth > 20) {
+                    break;
+                }
+            }
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('查询邀请链路失败，请稍后重试', 500);
         }
         return $this->success([
-            'user_id' => $userId,
+            'user_id' => $targetUserId,
             'depth' => $depth,
             'invite_path' => $user->invite_path,
             'lineage' => $lineage,
@@ -249,13 +342,27 @@ class InviteChainController extends Controller
 
     public function getInviteTree(Request $request, $userId)
     {
-        $user = User::with('dealerLevel')->find($userId);
+        if ($denied = $this->requireAuth($request)) {
+            return $denied;
+        }
+
+        $targetUserId = (int)$userId;
+        if ($denied = $this->checkDataScope($request, $targetUserId, '无权限查看该用户的邀请树')) {
+            return $denied;
+        }
+
+        $user = User::with('dealerLevel')->find($targetUserId);
         if (!$user) {
             return $this->error('用户不存在', 404);
         }
-        $maxDepth = $request->input('max_depth', 3);
-        $maxDepth = min(5, max(1, (int)$maxDepth));
-        $tree = $this->buildTree($userId, 0, $maxDepth);
+        $maxDepth = (int)$request->input('max_depth', 3);
+        $maxDepth = min(5, max(1, $maxDepth));
+        try {
+            $tree = $this->buildTree($targetUserId, 0, $maxDepth);
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('查询邀请树失败，请稍后重试', 500);
+        }
         return $this->success([
             'root_user' => [
                 'id' => $user->id,
@@ -311,36 +418,50 @@ class InviteChainController extends Controller
         return $result;
     }
 
-    public function getInviteStats($userId, Request $request)
+    public function getInviteStats(Request $request, $userId)
     {
-        $user = User::find($userId);
+        if ($denied = $this->requireAuth($request)) {
+            return $denied;
+        }
+
+        $targetUserId = (int)$userId;
+        if ($denied = $this->checkDataScope($request, $targetUserId, '无权限查看该用户的邀请统计')) {
+            return $denied;
+        }
+
+        $user = User::find($targetUserId);
         if (!$user) {
             return $this->error('用户不存在', 404);
         }
-        $stats = InviteChain::getInviteStats($userId);
-        $directInvitees = User::with('dealerLevel')
-            ->where('inviter_id', $userId)
-            ->orderBy('created_at', 'desc')
-            ->limit($request->input('recent_limit', 10))
-            ->get();
-        $totalAchievementFromDownline = DB::table('invite_chains')
-            ->join('users', 'invite_chains.invitee_id', '=', 'users.id')
-            ->where('invite_chains.inviter_id', $userId)
-            ->sum('users.total_achievement');
-        $levelDistribution = User::select(
-            'dealer_level_id',
-            DB::raw('COUNT(*) as count')
-        )
-        ->whereIn('id', function ($query) use ($userId) {
-            $query->select('invitee_id')
-                ->from('invite_chains')
-                ->where('inviter_id', $userId);
-        })
-        ->groupBy('dealer_level_id')
-        ->pluck('count', 'dealer_level_id')
-        ->toArray();
+        try {
+            $stats = InviteChain::getInviteStats($targetUserId);
+            $directInvitees = User::with('dealerLevel')
+                ->where('inviter_id', $targetUserId)
+                ->orderBy('created_at', 'desc')
+                ->limit((int)$request->input('recent_limit', 10))
+                ->get();
+            $totalAchievementFromDownline = DB::table('invite_chains')
+                ->join('users', 'invite_chains.invitee_id', '=', 'users.id')
+                ->where('invite_chains.inviter_id', $targetUserId)
+                ->sum('users.total_achievement');
+            $levelDistribution = User::select(
+                'dealer_level_id',
+                DB::raw('COUNT(*) as count')
+            )
+            ->whereIn('id', function ($query) use ($targetUserId) {
+                $query->select('invitee_id')
+                    ->from('invite_chains')
+                    ->where('inviter_id', $targetUserId);
+            })
+            ->groupBy('dealer_level_id')
+            ->pluck('count', 'dealer_level_id')
+            ->toArray();
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('查询邀请统计失败，请稍后重试', 500);
+        }
         return $this->success([
-            'user_id' => $userId,
+            'user_id' => $targetUserId,
             'user_invite_count' => $user->total_invite_count,
             'user_achievement' => $user->total_achievement,
             'chain_stats' => $stats,
@@ -362,7 +483,11 @@ class InviteChainController extends Controller
 
     public function markRewarded(Request $request, $id)
     {
-        $chain = InviteChain::find($id);
+        if ($denied = $this->requireAdmin($request)) {
+            return $denied;
+        }
+
+        $chain = InviteChain::find((int)$id);
         if (!$chain) {
             return $this->error('邀请记录不存在', 404);
         }
@@ -379,15 +504,24 @@ class InviteChainController extends Controller
         if ($validator->fails()) {
             return $this->error('参数验证失败', 422, $validator->errors());
         }
-        $chain->markRewarded(
-            $request->input('operator_id'),
-            $request->input('remark')
-        );
+        try {
+            $chain->markRewarded(
+                $request->filled('operator_id') ? (int)$request->input('operator_id') : null,
+                $request->input('remark')
+            );
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('奖励发放失败，请稍后重试', 500);
+        }
         return $this->success($chain->load(['operator']), '奖励已发放');
     }
 
     public function batchMarkRewarded(Request $request)
     {
+        if ($denied = $this->requireAdmin($request)) {
+            return $denied;
+        }
+
         $validator = Validator::make($request->all(), [
             'chain_ids' => 'required|array|min:1',
             'chain_ids.*' => 'integer|exists:invite_chains,id',
@@ -397,23 +531,32 @@ class InviteChainController extends Controller
         if ($validator->fails()) {
             return $this->error('参数验证失败', 422, $validator->errors());
         }
-        $operatorId = $request->input('operator_id');
+        $operatorId = $request->filled('operator_id') ? (int)$request->input('operator_id') : null;
         $remark = $request->input('remark');
-        $chains = InviteChain::whereIn('id', $request->input('chain_ids'))
-            ->where('is_rewarded', false)
-            ->get();
-        $count = 0;
-        foreach ($chains as $chain) {
-            if ($chain->markRewarded($operatorId, $remark)) {
-                $count++;
+        try {
+            $chains = InviteChain::whereIn('id', $request->input('chain_ids'))
+                ->where('is_rewarded', false)
+                ->get();
+            $count = 0;
+            foreach ($chains as $chain) {
+                if ($chain->markRewarded($operatorId, $remark)) {
+                    $count++;
+                }
             }
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('批量发放奖励失败，请稍后重试', 500);
         }
         return $this->success(['updated_count' => $count], "成功标记{$count}条记录为已发放");
     }
 
     public function confirm(Request $request, $id)
     {
-        $chain = InviteChain::find($id);
+        if ($denied = $this->requireAdmin($request)) {
+            return $denied;
+        }
+
+        $chain = InviteChain::find((int)$id);
         if (!$chain) {
             return $this->error('邀请记录不存在', 404);
         }
@@ -427,16 +570,25 @@ class InviteChainController extends Controller
         if ($validator->fails()) {
             return $this->error('参数验证失败', 422, $validator->errors());
         }
-        $chain->confirm(
-            $request->input('operator_id'),
-            $request->input('remark')
-        );
+        try {
+            $chain->confirm(
+                $request->filled('operator_id') ? (int)$request->input('operator_id') : null,
+                $request->input('remark')
+            );
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('确认邀请关系失败，请稍后重试', 500);
+        }
         return $this->success($chain->fresh()->load(['operator']), '邀请关系已确认');
     }
 
     public function cancel(Request $request, $id)
     {
-        $chain = InviteChain::find($id);
+        if ($denied = $this->requireAdmin($request)) {
+            return $denied;
+        }
+
+        $chain = InviteChain::find((int)$id);
         if (!$chain) {
             return $this->error('邀请记录不存在', 404);
         }
@@ -450,15 +602,24 @@ class InviteChainController extends Controller
         if ($validator->fails()) {
             return $this->error('参数验证失败', 422, $validator->errors());
         }
-        $chain->cancel(
-            $request->input('operator_id'),
-            $request->input('remark')
-        );
+        try {
+            $chain->cancel(
+                $request->filled('operator_id') ? (int)$request->input('operator_id') : null,
+                $request->input('remark')
+            );
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('取消邀请关系失败，请稍后重试', 500);
+        }
         return $this->success($chain->fresh()->load(['operator']), '邀请关系已取消');
     }
 
     public function batchConfirm(Request $request)
     {
+        if ($denied = $this->requireAdmin($request)) {
+            return $denied;
+        }
+
         $validator = Validator::make($request->all(), [
             'chain_ids' => 'required|array|min:1',
             'chain_ids.*' => 'integer|exists:invite_chains,id',
@@ -468,22 +629,31 @@ class InviteChainController extends Controller
         if ($validator->fails()) {
             return $this->error('参数验证失败', 422, $validator->errors());
         }
-        $operatorId = $request->input('operator_id');
+        $operatorId = $request->filled('operator_id') ? (int)$request->input('operator_id') : null;
         $remark = $request->input('remark');
-        $chains = InviteChain::whereIn('id', $request->input('chain_ids'))
-            ->pending()
-            ->get();
-        $count = 0;
-        foreach ($chains as $chain) {
-            if ($chain->confirm($operatorId, $remark)) {
-                $count++;
+        try {
+            $chains = InviteChain::whereIn('id', $request->input('chain_ids'))
+                ->pending()
+                ->get();
+            $count = 0;
+            foreach ($chains as $chain) {
+                if ($chain->confirm($operatorId, $remark ?: '批量审核确认')) {
+                    $count++;
+                }
             }
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('批量确认邀请记录失败，请稍后重试', 500);
         }
         return $this->success(['updated_count' => $count], "成功确认{$count}条邀请记录");
     }
 
     public function batchCancel(Request $request)
     {
+        if ($denied = $this->requireAdmin($request)) {
+            return $denied;
+        }
+
         $validator = Validator::make($request->all(), [
             'chain_ids' => 'required|array|min:1',
             'chain_ids.*' => 'integer|exists:invite_chains,id',
@@ -493,17 +663,22 @@ class InviteChainController extends Controller
         if ($validator->fails()) {
             return $this->error('参数验证失败', 422, $validator->errors());
         }
-        $operatorId = $request->input('operator_id');
+        $operatorId = $request->filled('operator_id') ? (int)$request->input('operator_id') : null;
         $remark = $request->input('remark');
-        $chains = InviteChain::whereIn('id', $request->input('chain_ids'))
-            ->whereIn('status', [InviteChain::STATUS_PENDING, InviteChain::STATUS_CONFIRMED])
-            ->where('is_rewarded', false)
-            ->get();
-        $count = 0;
-        foreach ($chains as $chain) {
-            if ($chain->cancel($operatorId, $remark)) {
-                $count++;
+        try {
+            $chains = InviteChain::whereIn('id', $request->input('chain_ids'))
+                ->whereIn('status', [InviteChain::STATUS_PENDING, InviteChain::STATUS_CONFIRMED])
+                ->where('is_rewarded', false)
+                ->get();
+            $count = 0;
+            foreach ($chains as $chain) {
+                if ($chain->cancel($operatorId, $remark)) {
+                    $count++;
+                }
             }
+        } catch (\Throwable $e) {
+            $this->safeLogException($e);
+            return $this->error('批量取消邀请记录失败，请稍后重试', 500);
         }
         return $this->success(['updated_count' => $count], "成功取消{$count}条邀请记录");
     }
