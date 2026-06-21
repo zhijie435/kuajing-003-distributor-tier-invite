@@ -621,35 +621,80 @@ const loadChainsList = async () => {
       status: chainFilters.status === '' ? undefined : chainFilters.status,
       page_size: 50
     })
-    chainsList.value = res.data?.list || buildMockChains()
+    chainsList.value = res.data?.list || buildMockChains(chainFilters)
   } catch {
-    chainsList.value = buildMockChains()
+    chainsList.value = buildMockChains(chainFilters)
   } finally {
     chainLoading.value = false
   }
 }
 
-const buildMockChains = () => {
+const buildMockChains = (filters = {}) => {
   const names = ['王小华', '李大强', '张美丽', '刘建国', '陈晓燕', '杨天翔', '赵雅芝', '孙悟空']
   const statuses = [2, 2, 2, 4, 2, 1, 2, 3, 2, 1, 2, 2]
-  return Array.from({ length: 12 }, (_, i) => ({
-    id: i + 1,
-    invitee: { id: i + 10, nickname: names[i % 8], username: `user_${10 + i}` },
-    depth: i < 6 ? 1 : i < 9 ? 2 : 3,
-    status: statuses[i],
-    commission_rate: [18, 12, 8][(i < 6 ? 0 : i < 9 ? 1 : 2)],
-    total_commission: Math.round(Math.random() * 8000) / 1,
-    reward_amount: i < 4 ? Math.round(Math.random() * 1000) / 1 : 0,
-    is_rewarded: i % 3 !== 2,
-    operator: i % 2 ? null : { nickname: '系统', username: 'system' },
-    operation_logs: [[
-      { action: 'create', action_label: '创建邀请关系', operator_id: null, operator_name: '系统', remark: '通过邀请码建立关系', created_at: `2024-${String((i % 12) + 1).padStart(2, '0')}-01 10:00:00` },
-      statuses[i] >= 2 ? { action: 'confirm', action_label: '确认邀请关系', operator_id: 1, operator_name: '管理员', remark: '手动确认邀请关系有效', created_at: `2024-${String((i % 12) + 1).padStart(2, '0')}-01 12:00:00` } : null,
-      statuses[i] === 4 ? { action: 'reward', action_label: '发放邀请奖励', operator_id: 1, operator_name: '管理员', remark: '手动发放奖励', created_at: `2024-${String((i % 12) + 1).padStart(2, '0')}-05 10:00:00` } : null,
-      statuses[i] === 3 ? { action: 'cancel', action_label: '取消邀请关系', operator_id: 1, operator_name: '管理员', remark: '邀请关系无效，已取消', created_at: `2024-${String((i % 12) + 1).padStart(2, '0')}-03 10:00:00` } : null,
-    ].filter(Boolean)],
-    created_at: `2024-${String((i % 12) + 1).padStart(2, '0')}-${String((i % 28) + 1).padStart(2, '0')} 10:30:00`
-  }))
+  const rootUser = selectedUser.value || { nickname: '创始人', username: 'user_0001', id: selectedUserId.value || 1 }
+  let data = Array.from({ length: 12 }, (_, i) => {
+    const depth = i < 6 ? 1 : i < 9 ? 2 : 3
+    const status = statuses[i]
+    const isRewarded = status === 4 || (i % 3 !== 2 && status !== 3)
+    return {
+      id: i + 1,
+      inviter: { id: rootUser.id, nickname: rootUser.nickname, username: rootUser.username },
+      inviter_id: rootUser.id,
+      invitee: { id: i + 10, nickname: names[i % 8], username: `user_${10 + i}` },
+      invitee_id: i + 10,
+      depth,
+      status,
+      commission_rate: [18, 12, 8][(i < 6 ? 0 : i < 9 ? 1 : 2)],
+      total_commission: Math.round(Math.random() * 8000),
+      reward_amount: i < 4 ? Math.round(Math.random() * 1000) : 0,
+      is_rewarded: isRewarded,
+      rewarded_at: isRewarded ? `2024-${String((i % 12) + 1).padStart(2, '0')}-10 10:00:00` : null,
+      operator: i % 2 ? null : { nickname: '系统', username: 'system' },
+      confirmed_at: status >= 2 ? `2024-${String((i % 12) + 1).padStart(2, '0')}-01 12:00:00` : null,
+      cancelled_at: status === 3 ? `2024-${String((i % 12) + 1).padStart(2, '0')}-03 10:00:00` : null,
+      operation_logs: [[
+        { action: 'create', action_label: '创建邀请关系', operator_id: null, operator_name: '系统', remark: '通过邀请码建立关系', old_status: status, new_status: status, created_at: `2024-${String((i % 12) + 1).padStart(2, '0')}-01 10:00:00` },
+        status >= 2 ? { action: 'confirm', action_label: '确认邀请关系', operator_id: 1, operator_name: '管理员', remark: '手动确认邀请关系有效', old_status: 1, new_status: 2, created_at: `2024-${String((i % 12) + 1).padStart(2, '0')}-01 12:00:00` } : null,
+        status === 4 ? { action: 'reward', action_label: '发放邀请奖励', operator_id: 1, operator_name: '管理员', remark: '手动发放奖励', old_status: 2, new_status: 4, created_at: `2024-${String((i % 12) + 1).padStart(2, '0')}-05 10:00:00` } : null,
+        status === 3 ? { action: 'cancel', action_label: '取消邀请关系', operator_id: 1, operator_name: '管理员', remark: '邀请关系无效，已取消', old_status: 2, new_status: 3, created_at: `2024-${String((i % 12) + 1).padStart(2, '0')}-03 10:00:00` } : null,
+      ].filter(Boolean)],
+      remark: '',
+      invite_code: i % 3 === 0 ? { code: `INV${String(i + 1).padStart(6, '0')}` } : null,
+      created_at: `2024-${String((i % 12) + 1).padStart(2, '0')}-${String((i % 28) + 1).padStart(2, '0')} 10:30:00`
+    }
+  })
+  if (filters.depth) {
+    data = data.filter(r => r.depth === filters.depth)
+  }
+  if (filters.status !== '' && filters.status != null && filters.status !== undefined) {
+    data = data.filter(r => r.status === Number(filters.status))
+  }
+  if (filters.is_rewarded !== '' && filters.is_rewarded != null && filters.is_rewarded !== undefined) {
+    data = data.filter(r => r.is_rewarded === Boolean(filters.is_rewarded))
+  }
+  return data
+}
+
+const buildMockChainDetail = (row) => {
+  const rootUser = selectedUser.value || { nickname: '创始人', username: 'user_0001', id: selectedUserId.value || 1 }
+  const status = row.status || 2
+  return {
+    ...row,
+    inviter: row.inviter || { id: rootUser.id, nickname: rootUser.nickname, username: rootUser.username },
+    inviter_id: row.inviter_id || rootUser.id,
+    invitee: row.invitee || { id: row.invitee_id, nickname: '未知用户', username: `user_${row.invitee_id}` },
+    confirmed_at: status >= 2 ? (row.confirmed_at || '2024-01-01 12:00:00') : null,
+    cancelled_at: status === 3 ? (row.cancelled_at || '2024-01-03 10:00:00') : null,
+    rewarded_at: row.is_rewarded ? (row.rewarded_at || '2024-01-05 10:00:00') : null,
+    operation_logs: row.operation_logs || [
+      { action: 'create', action_label: '创建邀请关系', operator_id: null, operator_name: '系统', remark: '通过邀请码建立关系', old_status: status, new_status: status, created_at: row.created_at }
+    ],
+    is_direct: row.depth === 1,
+    can_confirm: status === 1,
+    can_cancel: [1, 2].includes(status) && !row.is_rewarded,
+    can_reward: !row.is_rewarded && (row.reward_amount || 0) > 0 && status === 2,
+  }
 }
 
 const renderTreeChart = () => {
@@ -757,7 +802,7 @@ const viewChainDetail = async (row) => {
     const res = await inviteChainApi.detail(row.id)
     currentChainDetail.value = res.data
   } catch {
-    currentChainDetail.value = row
+    currentChainDetail.value = buildMockChainDetail(row)
   }
   chainDetailVisible.value = true
 }

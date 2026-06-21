@@ -655,17 +655,17 @@ const loadList = async () => {
     delete params.has_bonus
     if (filters.has_bonus) params.has_bonus = true
     const res = await upgradeRecordApi.list(params)
-    list.value = res.data?.list || buildMockList()
+    list.value = res.data?.list || buildMockList(filters)
     pagination.total = res.data?.pagination?.total || list.value.length
   } catch {
-    list.value = buildMockList()
-    pagination.total = 60
+    list.value = buildMockList(filters)
+    pagination.total = list.value.length
   } finally {
     loading.value = false
   }
 }
 
-const buildMockList = () => {
+const buildMockList = (filters = {}) => {
   const users = [
     { id: 1, nickname: '张伟', username: 'user_0001' },
     { id: 2, nickname: '李娜', username: 'user_0002' },
@@ -677,7 +677,7 @@ const buildMockList = () => {
   ]
   const types = [1, 1, 1, 3, 2, 1, 4, 3]
   const statuses = [2, 2, 4, 2, 1, 2, 3, 2, 4, 1, 2, 2, 1, 3, 2]
-  return Array.from({ length: 20 }, (_, i) => {
+  let data = Array.from({ length: 20 }, (_, i) => {
     const from = Math.min(i % 3, 2)
     const to = from + 1
     const type = types[i % 8]
@@ -714,7 +714,9 @@ const buildMockList = () => {
       id: i + 1,
       user: users[i % 3], user_id: users[i % 3].id,
       old_level: from === 0 ? null : levels[from - 1],
+      old_level_id: from === 0 ? null : levels[from - 1].id,
       new_level: levels[to],
+      new_level_id: levels[to].id,
       upgrade_type: type,
       status,
       achievement_at_upgrade: Math.floor(Math.random() * 500000),
@@ -731,6 +733,53 @@ const buildMockList = () => {
       created_at: `2024-${String(i % 12 + 1).padStart(2, '0')}-${String(i % 28 + 1).padStart(2, '0')} 1${i % 10}:${String(i * 3 % 60).padStart(2, '0')}:00`
     }
   })
+  if (filters.status !== '' && filters.status != null && filters.status !== undefined) {
+    data = data.filter(r => r.status === Number(filters.status))
+  }
+  if (filters.upgrade_type !== '' && filters.upgrade_type != null && filters.upgrade_type !== undefined) {
+    data = data.filter(r => r.upgrade_type === Number(filters.upgrade_type))
+  }
+  if (filters.new_level_id) {
+    data = data.filter(r => r.new_level_id === Number(filters.new_level_id))
+  }
+  if (filters.is_rewarded !== '' && filters.is_rewarded != null && filters.is_rewarded !== undefined) {
+    data = data.filter(r => r.is_rewarded === Boolean(filters.is_rewarded))
+  }
+  if (filters.has_bonus) {
+    data = data.filter(r => r.reward_bonus > 0)
+  }
+  if (filters.keyword) {
+    const kw = String(filters.keyword).toLowerCase()
+    data = data.filter(r =>
+      (r.user?.nickname || '').toLowerCase().includes(kw) ||
+      (r.user?.username || '').toLowerCase().includes(kw)
+    )
+  }
+  if (filters.start_date) {
+    data = data.filter(r => r.created_at >= filters.start_date)
+  }
+  if (filters.end_date) {
+    data = data.filter(r => r.created_at <= filters.end_date + ' 23:59:59')
+  }
+  return data
+}
+
+const buildMockUpgradeDetail = (row) => {
+  const status = row.status || 2
+  return {
+    ...row,
+    status_label: getUpgradeStatusLabel(status),
+    status_tag_type: getUpgradeStatusTagType(status),
+    upgrade_type_label: getUpgradeTypeLabel(row.upgrade_type),
+    is_upgrade: !row.old_level || row.new_level_id > (row.old_level_id || 0),
+    is_downgrade: row.old_level && row.new_level_id < row.old_level_id,
+    can_approve: status === 1,
+    can_reject: status === 1,
+    can_reward: [1, 2].includes(status) && (row.reward_bonus || 0) > 0 && !row.is_rewarded,
+    operation_logs: row.operation_logs || [
+      { action: 'create', action_label: '创建升级记录', operator_id: null, operator_name: '系统', remark: '升级记录', old_status: status, new_status: status, created_at: row.created_at }
+    ]
+  }
 }
 
 const resetFilters = () => {
@@ -839,7 +888,7 @@ const viewDetail = async (row) => {
     const res = await upgradeRecordApi.detail(row.id)
     currentDetail.value = res.data
   } catch {
-    currentDetail.value = row
+    currentDetail.value = buildMockUpgradeDetail(row)
   }
   detailVisible.value = true
 }
