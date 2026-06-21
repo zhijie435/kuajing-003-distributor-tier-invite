@@ -52,7 +52,7 @@
           <template #default="{ row }">
             <div style="display:flex;align-items:center;gap:10px">
               <div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#667eea,#764ba2);display:flex;align-items:center;justify-content:center;color:#fff">
-                <el-icon><Crown /></el-icon>
+                <el-icon><Star /></el-icon>
               </div>
               <div>
                 <div style="font-weight:600">{{ row.name }}</div>
@@ -195,7 +195,7 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Plus, Search, RefreshLeft, Crown, Wallet, User } from '@element-plus/icons-vue'
+import { Plus, Search, RefreshLeft, Star, Wallet, User } from '@element-plus/icons-vue'
 import { dealerLevelApi } from '@/api'
 
 const loading = ref(false)

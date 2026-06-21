@@ -118,11 +118,23 @@ export const inviteChainApi = {
   getTree(userId, params) {
     return request.get(`/invite-chains/user/${userId}/tree`, { params })
   },
-  markRewarded(id) {
-    return request.patch(`/invite-chains/${id}/reward`)
+  markRewarded(id, data = {}) {
+    return request.patch(`/invite-chains/${id}/reward`, data)
   },
   batchMarkRewarded(data) {
     return request.patch('/invite-chains/batch/reward', data)
+  },
+  confirm(id, data = {}) {
+    return request.patch(`/invite-chains/${id}/confirm`, data)
+  },
+  cancel(id, data = {}) {
+    return request.patch(`/invite-chains/${id}/cancel`, data)
+  },
+  batchConfirm(data) {
+    return request.patch('/invite-chains/batch/confirm', data)
+  },
+  batchCancel(data) {
+    return request.patch('/invite-chains/batch/cancel', data)
   }
 }
 
@@ -145,13 +157,25 @@ export const upgradeRecordApi = {
   checkAutoUpgrade(data) {
     return request.post('/upgrade-records/check-auto-upgrade', data)
   },
-  markRewarded(id) {
-    return request.patch(`/upgrade-records/${id}/reward`)
+  markRewarded(id, data = {}) {
+    return request.patch(`/upgrade-records/${id}/reward`, data)
   },
   batchMarkRewarded(data) {
     return request.patch('/upgrade-records/batch/reward', data)
   },
   rewardAllPending(data) {
     return request.patch('/upgrade-records/reward-all-pending', data)
+  },
+  approve(id, data = {}) {
+    return request.patch(`/upgrade-records/${id}/approve`, data)
+  },
+  reject(id, data = {}) {
+    return request.patch(`/upgrade-records/${id}/reject`, data)
+  },
+  batchApprove(data) {
+    return request.patch('/upgrade-records/batch/approve', data)
+  },
+  batchReject(data) {
+    return request.patch('/upgrade-records/batch/reject', data)
   }
 }

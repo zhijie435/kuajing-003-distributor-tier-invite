@@ -9,6 +9,11 @@ class InviteChain extends BaseModel
 {
     protected $table = 'invite_chains';
 
+    const STATUS_PENDING = 1;
+    const STATUS_CONFIRMED = 2;
+    const STATUS_CANCELLED = 3;
+    const STATUS_REWARDED = 4;
+
     protected $fillable = [
         'inviter_id',
         'invitee_id',
@@ -20,6 +25,11 @@ class InviteChain extends BaseModel
         'is_rewarded',
         'rewarded_at',
         'remark',
+        'status',
+        'operator_id',
+        'operation_logs',
+        'confirmed_at',
+        'cancelled_at',
     ];
 
     protected $casts = [
@@ -29,6 +39,10 @@ class InviteChain extends BaseModel
         'reward_amount' => 'decimal:2',
         'is_rewarded' => 'boolean',
         'rewarded_at' => 'datetime:Y-m-d H:i:s',
+        'status' => 'integer',
+        'operation_logs' => 'array',
+        'confirmed_at' => 'datetime:Y-m-d H:i:s',
+        'cancelled_at' => 'datetime:Y-m-d H:i:s',
     ];
 
     public function inviter(): BelongsTo
@@ -44,6 +58,11 @@ class InviteChain extends BaseModel
     public function inviteCode(): BelongsTo
     {
         return $this->belongsTo(InviteCode::class, 'invite_code_id');
+    }
+
+    public function operator(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'operator_id');
     }
 
     public static function createInviteChain(
@@ -63,6 +82,14 @@ class InviteChain extends BaseModel
             $commissionRate,
             $level
         ) {
+            $initialLogs = [[
+                'action' => 'create',
+                'action_label' => '创建邀请关系',
+                'operator_id' => null,
+                'operator_name' => '系统',
+                'remark' => $inviteCodeId ? '通过邀请码建立关系' : '直接创建邀请关系',
+                'created_at' => now()->toDateTimeString(),
+            ]];
             $chain = self::create([
                 'inviter_id' => $inviterId,
                 'invitee_id' => $inviteeId,
@@ -72,6 +99,9 @@ class InviteChain extends BaseModel
                 'total_commission' => 0,
                 'reward_amount' => $rewardAmount ?? 0,
                 'is_rewarded' => false,
+                'status' => self::STATUS_CONFIRMED,
+                'confirmed_at' => now(),
+                'operation_logs' => $initialLogs,
             ]);
             self::createAncestorChains($inviterId, $inviteeId, $inviteCodeId);
             $invitee = User::find($inviteeId);
@@ -107,6 +137,16 @@ class InviteChain extends BaseModel
                 'total_commission' => 0,
                 'reward_amount' => 0,
                 'is_rewarded' => true,
+                'status' => self::STATUS_CONFIRMED,
+                'confirmed_at' => now(),
+                'operation_logs' => [[
+                    'action' => 'create',
+                    'action_label' => '创建间接邀请关系',
+                    'operator_id' => null,
+                    'operator_name' => '系统',
+                    'remark' => "深度{$depth}间接邀请",
+                    'created_at' => now()->toDateTimeString(),
+                ]],
                 'remark' => "深度{$depth}间接邀请",
             ]);
             $depth++;
@@ -116,19 +156,141 @@ class InviteChain extends BaseModel
         }
     }
 
-    public function markRewarded(): bool
+    public function markRewarded(?int $operatorId = null, ?string $remark = null): bool
     {
         $this->is_rewarded = true;
         $this->rewarded_at = now();
+        $this->status = self::STATUS_REWARDED;
+        $this->operator_id = $operatorId;
+        $this->addOperationLog('reward', '发放邀请奖励', $operatorId, $remark ?? '手动发放奖励');
         return $this->save();
     }
 
-    public function addCommission(float $amount): bool
+    public function addOperationLog(string $action, string $actionLabel, ?int $operatorId = null, ?string $remark = null): void
+    {
+        $logs = is_array($this->operation_logs) ? $this->operation_logs : [];
+        $operator = $operatorId ? User::find($operatorId) : null;
+        $logs[] = [
+            'action' => $action,
+            'action_label' => $actionLabel,
+            'operator_id' => $operatorId,
+            'operator_name' => $operator ? ($operator->nickname ?: $operator->username) : '系统',
+            'remark' => $remark,
+            'old_status' => $this->getOriginal('status'),
+            'new_status' => $this->status,
+            'created_at' => now()->toDateTimeString(),
+        ];
+        $this->operation_logs = $logs;
+    }
+
+    public function getStatusLabel(): string
+    {
+        $labels = [
+            self::STATUS_PENDING => '待确认',
+            self::STATUS_CONFIRMED => '已确认',
+            self::STATUS_CANCELLED => '已取消',
+            self::STATUS_REWARDED => '已发奖',
+        ];
+        return $labels[$this->status] ?? '未知';
+    }
+
+    public function getStatusTagType(): string
+    {
+        $types = [
+            self::STATUS_PENDING => 'warning',
+            self::STATUS_CONFIRMED => 'success',
+            self::STATUS_CANCELLED => 'info',
+            self::STATUS_REWARDED => 'primary',
+        ];
+        return $types[$this->status] ?? '';
+    }
+
+    public function isPending(): bool
+    {
+        return $this->status == self::STATUS_PENDING;
+    }
+
+    public function isConfirmed(): bool
+    {
+        return $this->status == self::STATUS_CONFIRMED;
+    }
+
+    public function isCancelled(): bool
+    {
+        return $this->status == self::STATUS_CANCELLED;
+    }
+
+    public function isRewarded(): bool
+    {
+        return $this->status == self::STATUS_REWARDED;
+    }
+
+    public function canConfirm(): bool
+    {
+        return $this->status == self::STATUS_PENDING;
+    }
+
+    public function canCancel(): bool
+    {
+        return in_array($this->status, [self::STATUS_PENDING, self::STATUS_CONFIRMED]);
+    }
+
+    public function confirm(?int $operatorId = null, ?string $remark = null): bool
+    {
+        if (!$this->canConfirm()) {
+            return false;
+        }
+        $this->status = self::STATUS_CONFIRMED;
+        $this->confirmed_at = now();
+        $this->operator_id = $operatorId;
+        $this->addOperationLog('confirm', '确认邀请关系', $operatorId, $remark ?? '手动确认邀请关系有效');
+        return $this->save();
+    }
+
+    public function cancel(?int $operatorId = null, ?string $remark = null): bool
+    {
+        if (!$this->canCancel()) {
+            return false;
+        }
+        $this->status = self::STATUS_CANCELLED;
+        $this->cancelled_at = now();
+        $this->operator_id = $operatorId;
+        $this->addOperationLog('cancel', '取消邀请关系', $operatorId, $remark ?? '手动取消邀请关系');
+        return DB::transaction(function () {
+            $result = $this->save();
+            if ($result && $this->depth == 1) {
+                $invitee = User::find($this->invitee_id);
+                if ($invitee && $invitee->inviter_id == $this->inviter_id) {
+                    $invitee->inviter_id = null;
+                    $invitee->invite_path = null;
+                    $invitee->invite_depth = 0;
+                    $invitee->save();
+                }
+                $inviter = User::find($this->inviter_id);
+                if ($inviter) {
+                    $inviter->total_invite_count = max(0, $inviter->total_invite_count - 1);
+                    $inviter->save();
+                }
+            }
+            return $result;
+        });
+    }
+
+    public function addCommission(float $amount, ?int $operatorId = null, ?string $remark = null): bool
     {
         if ($amount <= 0) {
             return false;
         }
+        $oldCommission = $this->total_commission;
         $this->total_commission += $amount;
+        if ($operatorId || $remark) {
+            $this->addOperationLog(
+                'add_commission',
+                '增加佣金',
+                $operatorId,
+                ($remark ?? '佣金结算') . "，增加金额：{$amount}，原累计：{$oldCommission}"
+            );
+        }
         return $this->save();
     }
 
@@ -167,6 +329,34 @@ class InviteChain extends BaseModel
         return $query->where('invitee_id', $inviteeId);
     }
 
+    public function scopeByStatus($query, $status)
+    {
+        if (is_array($status)) {
+            return $query->whereIn('status', $status);
+        }
+        return $query->where('status', $status);
+    }
+
+    public function scopePending($query)
+    {
+        return $query->where('status', self::STATUS_PENDING);
+    }
+
+    public function scopeConfirmed($query)
+    {
+        return $query->where('status', self::STATUS_CONFIRMED);
+    }
+
+    public function scopeCancelled($query)
+    {
+        return $query->where('status', self::STATUS_CANCELLED);
+    }
+
+    public function scopeNotCancelled($query)
+    {
+        return $query->where('status', '!=', self::STATUS_CANCELLED);
+    }
+
     public static function getDirectInviteesCount(int $inviterId): int
     {
         return self::where('inviter_id', $inviterId)->direct()->count();
@@ -185,7 +375,10 @@ class InviteChain extends BaseModel
             DB::raw("SUM(CASE WHEN depth > 1 THEN 1 ELSE 0 END) as indirect_count"),
             DB::raw('COALESCE(SUM(total_commission), 0) as total_commission'),
             DB::raw('COALESCE(SUM(reward_amount), 0) as total_reward'),
-            DB::raw("SUM(CASE WHEN is_rewarded = 1 THEN 1 ELSE 0 END) as rewarded_count")
+            DB::raw("SUM(CASE WHEN is_rewarded = 1 THEN 1 ELSE 0 END) as rewarded_count"),
+            DB::raw("SUM(CASE WHEN status = " . self::STATUS_PENDING . " THEN 1 ELSE 0 END) as pending_count"),
+            DB::raw("SUM(CASE WHEN status = " . self::STATUS_CONFIRMED . " THEN 1 ELSE 0 END) as confirmed_count"),
+            DB::raw("SUM(CASE WHEN status = " . self::STATUS_CANCELLED . " THEN 1 ELSE 0 END) as cancelled_count")
         )
         ->where('inviter_id', $inviterId)
         ->first()
@@ -205,6 +398,9 @@ class InviteChain extends BaseModel
             'total_commission' => (float)$stats['total_commission'],
             'total_reward' => (float)$stats['total_reward'],
             'rewarded_count' => (int)$stats['rewarded_count'],
+            'pending_count' => (int)$stats['pending_count'],
+            'confirmed_count' => (int)$stats['confirmed_count'],
+            'cancelled_count' => (int)$stats['cancelled_count'],
             'depth_stats' => $depthStats,
         ];
     }

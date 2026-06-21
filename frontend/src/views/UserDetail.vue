@@ -148,7 +148,7 @@
           </div>
         </div>
       </el-col>
-    </el-col>
+    </el-row>
 
     <el-row :gutter="16">
       <el-col :span="12">

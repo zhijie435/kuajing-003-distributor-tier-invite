@@ -123,6 +123,11 @@ CREATE TABLE `invite_chains` (
   `reward_amount` DECIMAL(15,2) NOT NULL DEFAULT 0.00 COMMENT '邀请奖励',
   `is_rewarded` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已发放奖励',
   `rewarded_at` TIMESTAMP NULL DEFAULT NULL COMMENT '奖励发放时间',
+  `status` TINYINT NOT NULL DEFAULT 2 COMMENT '状态：1待确认 2已确认 3已取消 4已发奖',
+  `operator_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '最后操作人ID',
+  `operation_logs` JSON DEFAULT NULL COMMENT '操作日志JSON数组',
+  `confirmed_at` TIMESTAMP NULL DEFAULT NULL COMMENT '确认时间',
+  `cancelled_at` TIMESTAMP NULL DEFAULT NULL COMMENT '取消时间',
   `remark` TEXT DEFAULT NULL COMMENT '备注',
   `created_at` TIMESTAMP NULL DEFAULT NULL,
   `updated_at` TIMESTAMP NULL DEFAULT NULL,
@@ -132,9 +137,12 @@ CREATE TABLE `invite_chains` (
   KEY `idx_invitee_id` (`invitee_id`),
   KEY `idx_invite_code_id` (`invite_code_id`),
   KEY `idx_depth` (`depth`),
+  KEY `idx_status` (`status`),
+  KEY `idx_operator_id` (`operator_id`),
   CONSTRAINT `fk_invite_chains_inviter` FOREIGN KEY (`inviter_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_invite_chains_invitee` FOREIGN KEY (`invitee_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `fk_invite_chains_code` FOREIGN KEY (`invite_code_id`) REFERENCES `invite_codes` (`id`) ON DELETE SET NULL
+  CONSTRAINT `fk_invite_chains_code` FOREIGN KEY (`invite_code_id`) REFERENCES `invite_codes` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_invite_chains_operator` FOREIGN KEY (`operator_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='邀请链路表';
 
 -- ========================================================
@@ -152,8 +160,12 @@ CREATE TABLE `upgrade_records` (
   `reward_bonus` DECIMAL(15,2) NOT NULL DEFAULT 0.00 COMMENT '升级奖励金额',
   `is_rewarded` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '奖励是否已发放',
   `rewarded_at` TIMESTAMP NULL DEFAULT NULL COMMENT '奖励发放时间',
-  `operator_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '操作人ID',
+  `status` TINYINT NOT NULL DEFAULT 2 COMMENT '状态：1待审核 2审核通过 3审核拒绝 4已发奖',
+  `reviewed_at` TIMESTAMP NULL DEFAULT NULL COMMENT '审核时间',
+  `reviewer_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '审核人ID',
+  `operator_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '创建操作人ID',
   `invite_code_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '关联邀请码ID',
+  `operation_logs` JSON DEFAULT NULL COMMENT '操作日志JSON数组',
   `remark` TEXT DEFAULT NULL COMMENT '备注',
   `created_at` TIMESTAMP NULL DEFAULT NULL,
   `updated_at` TIMESTAMP NULL DEFAULT NULL,
@@ -163,10 +175,13 @@ CREATE TABLE `upgrade_records` (
   KEY `idx_new_level_id` (`new_level_id`),
   KEY `idx_upgrade_type` (`upgrade_type`),
   KEY `idx_created_at` (`created_at`),
+  KEY `idx_status` (`status`),
+  KEY `idx_reviewer_id` (`reviewer_id`),
   CONSTRAINT `fk_upgrade_records_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_upgrade_records_old_level` FOREIGN KEY (`old_level_id`) REFERENCES `dealer_levels` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_upgrade_records_new_level` FOREIGN KEY (`new_level_id`) REFERENCES `dealer_levels` (`id`) ON DELETE RESTRICT,
   CONSTRAINT `fk_upgrade_records_operator` FOREIGN KEY (`operator_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_upgrade_records_reviewer` FOREIGN KEY (`reviewer_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
   CONSTRAINT `fk_upgrade_records_code` FOREIGN KEY (`invite_code_id`) REFERENCES `invite_codes` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='升级记录表';
 
@@ -218,32 +233,32 @@ INSERT INTO `invite_codes` (`code`, `owner_id`, `target_dealer_level_id`, `max_u
 -- ========================================================
 -- 初始化：测试邀请链路
 -- ========================================================
-INSERT INTO `invite_chains` (`inviter_id`, `invitee_id`, `invite_code_id`, `depth`, `commission_rate`, `total_commission`, `reward_amount`, `is_rewarded`, `rewarded_at`, `remark`, `created_at`, `updated_at`) VALUES
-(1, 2, NULL, 1, 25.00, 128000.00, 50000.00, 1, NOW(), '直接邀请', NOW(), NOW()),
-(1, 3, NULL, 2, 20.00, 85600.00, 0.00, 1, NOW(), '深度2间接邀请', NOW(), NOW()),
-(1, 4, NULL, 3, 15.00, 26850.00, 0.00, 1, NOW(), '深度3间接邀请', NOW(), NOW()),
-(2, 3, 1, 1, 18.00, 85600.00, 15000.00, 1, NOW(), '使用 FOUNDER1 邀请码', NOW(), NOW()),
-(2, 4, NULL, 2, 14.40, 26850.00, 0.00, 1, NOW(), '深度2间接邀请', NOW(), NOW()),
-(3, 4, 2, 1, 12.00, 26850.00, 5000.00, 1, NOW(), '使用 GOLD1234 邀请码', NOW(), NOW()),
-(3, 7, NULL, 1, 12.00, 5200.00, 2000.00, 1, NOW(), '直接邀请', NOW(), NOW()),
-(4, 5, 3, 1, 8.00, 16800.00, 2000.00, 1, NOW(), '使用 SILVER88 邀请码', NOW(), NOW()),
-(4, 6, 3, 1, 8.00, 6800.00, 2000.00, 1, NOW(), '使用 SILVER88 邀请码', NOW(), NOW()),
-(5, 8, 5, 1, 5.00, 1200.00, 0.00, 1, NOW(), '使用 NORMAL11 邀请码', NOW(), NOW());
+INSERT INTO `invite_chains` (`inviter_id`, `invitee_id`, `invite_code_id`, `depth`, `commission_rate`, `total_commission`, `reward_amount`, `is_rewarded`, `rewarded_at`, `status`, `operator_id`, `operation_logs`, `confirmed_at`, `cancelled_at`, `remark`, `created_at`, `updated_at`) VALUES
+(1, 2, NULL, 1, 25.00, 128000.00, 50000.00, 1, NOW(), 4, 1, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建邀请关系','operator_id',NULL,'operator_name','系统','remark','系统初始化创建','old_status',2,'new_status',2,'created_at','2024-01-01 00:00:00'), JSON_OBJECT('action','confirm','action_label','确认邀请关系','operator_id',1,'operator_name','超级管理员','remark','初始化确认有效','old_status',2,'new_status',2,'created_at','2024-01-01 00:05:00'), JSON_OBJECT('action','reward','action_label','发放邀请奖励','operator_id',1,'operator_name','超级管理员','remark','首批发奖','old_status',2,'new_status',4,'created_at',NOW())), NOW(), NULL, '直接邀请', NOW(), NOW()),
+(1, 3, NULL, 2, 20.00, 85600.00, 0.00, 1, NOW(), 2, NULL, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建邀请关系','operator_id',NULL,'operator_name','系统','remark','系统初始化创建','old_status',2,'new_status',2,'created_at','2024-02-01 00:00:00')), NOW(), NULL, '深度2间接邀请', NOW(), NOW()),
+(1, 4, NULL, 3, 15.00, 26850.00, 0.00, 1, NOW(), 2, NULL, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建邀请关系','operator_id',NULL,'operator_name','系统','remark','系统初始化创建','old_status',2,'new_status',2,'created_at','2024-03-01 00:00:00')), NOW(), NULL, '深度3间接邀请', NOW(), NOW()),
+(2, 3, 1, 1, 18.00, 85600.00, 15000.00, 1, NOW(), 4, 1, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建邀请关系','operator_id',NULL,'operator_name','系统','remark','使用邀请码建立关系','old_status',2,'new_status',2,'created_at','2024-02-15 10:00:00'), JSON_OBJECT('action','reward','action_label','发放邀请奖励','operator_id',1,'operator_name','超级管理员','remark','邀请码激活奖励','old_status',2,'new_status',4,'created_at',NOW())), NOW(), NULL, '使用 FOUNDER1 邀请码', NOW(), NOW()),
+(2, 4, NULL, 2, 14.40, 26850.00, 0.00, 1, NOW(), 2, NULL, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建邀请关系','operator_id',NULL,'operator_name','系统','remark','系统初始化创建','old_status',2,'new_status',2,'created_at','2024-03-10 00:00:00')), NOW(), NULL, '深度2间接邀请', NOW(), NOW()),
+(3, 4, 2, 1, 12.00, 26850.00, 5000.00, 1, NOW(), 2, NULL, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建邀请关系','operator_id',NULL,'operator_name','系统','remark','使用邀请码建立关系','old_status',2,'new_status',2,'created_at','2024-04-01 00:00:00')), NOW(), NULL, '使用 GOLD1234 邀请码', NOW(), NOW()),
+(3, 7, NULL, 1, 12.00, 5200.00, 2000.00, 1, NOW(), 2, NULL, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建邀请关系','operator_id',NULL,'operator_name','系统','remark','系统初始化创建','old_status',2,'new_status',2,'created_at','2024-05-10 00:00:00')), NOW(), NULL, '直接邀请', NOW(), NOW()),
+(4, 5, 3, 1, 8.00, 16800.00, 2000.00, 1, NOW(), 4, 1, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建邀请关系','operator_id',NULL,'operator_name','系统','remark','使用邀请码建立关系','old_status',2,'new_status',2,'created_at','2024-06-01 10:00:00'), JSON_OBJECT('action','reward','action_label','发放邀请奖励','operator_id',1,'operator_name','超级管理员','remark','月度奖励发放','old_status',2,'new_status',4,'created_at',NOW())), NOW(), NULL, '使用 SILVER88 邀请码', NOW(), NOW()),
+(4, 6, 3, 1, 8.00, 6800.00, 2000.00, 0, NULL, 1, NULL, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建邀请关系','operator_id',NULL,'operator_name','系统','remark','使用邀请码建立关系','old_status',1,'new_status',1,'created_at','2024-11-20 00:00:00')), NULL, NULL, '使用 SILVER88 邀请码', NOW(), NOW()),
+(5, 8, 5, 1, 5.00, 1200.00, 0.00, 1, NOW(), 3, 1, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建邀请关系','operator_id',NULL,'operator_name','系统','remark','使用邀请码建立关系','old_status',1,'new_status',1,'created_at','2024-12-01 10:00:00'), JSON_OBJECT('action','cancel','action_label','取消邀请关系','operator_id',1,'operator_name','超级管理员','remark','邀请码重复使用，取消关系','old_status',1,'new_status',3,'created_at','2024-12-02 10:00:00')), NULL, '2024-12-02 10:00:00', '使用 NORMAL11 邀请码', NOW(), NOW());
 
 -- ========================================================
 -- 初始化：测试升级记录
 -- ========================================================
-INSERT INTO `upgrade_records` (`user_id`, `old_level_id`, `new_level_id`, `upgrade_type`, `achievement_at_upgrade`, `invite_count_at_upgrade`, `reward_bonus`, `is_rewarded`, `rewarded_at`, `operator_id`, `invite_code_id`, `remark`, `created_at`, `updated_at`) VALUES
-(2, NULL, 2, 1, 50000.00, 5, 2000.00, 1, NOW(), NULL, NULL, '自动升级：满足银牌条件', '2024-03-15 10:30:00', NOW()),
-(2, 2, 3, 1, 150000.00, 15, 5000.00, 1, NOW(), NULL, NULL, '自动升级：满足金牌条件', '2024-06-20 14:20:00', NOW()),
-(2, 3, 4, 3, 180000.00, 18, 15000.00, 1, NOW(), NULL, 1, '邀请码升级：使用FOUNDER1', '2024-08-10 09:15:00', NOW()),
-(3, NULL, 2, 1, 52000.00, 6, 2000.00, 1, NOW(), NULL, NULL, '自动升级', '2024-04-10 11:00:00', NOW()),
-(3, 2, 3, 3, 156000.00, 16, 5000.00, 1, NOW(), NULL, 2, '邀请码升级：使用GOLD1234', '2024-09-05 16:30:00', NOW()),
-(4, NULL, 2, 3, 60000.00, 5, 2000.00, 1, NOW(), NULL, 3, '邀请码升级：使用SILVER88', '2024-07-18 13:45:00', NOW()),
-(4, 2, 3, 1, 158000.00, 16, 5000.00, 1, NOW(), NULL, NULL, '自动升级', '2024-10-12 08:20:00', NOW()),
-(5, NULL, 2, 1, 51000.00, 5, 2000.00, 1, NOW(), NULL, NULL, '自动升级', '2024-11-01 10:10:00', NOW()),
-(5, 2, 3, 4, 168000.00, 12, 5000.00, 0, NULL, 1, NULL, '后台手动调整', '2024-12-01 15:00:00', NOW()),
-(6, NULL, 2, 1, 50500.00, 5, 2000.00, 1, NOW(), NULL, NULL, '自动升级', '2024-11-20 17:25:00', NOW());
+INSERT INTO `upgrade_records` (`user_id`, `old_level_id`, `new_level_id`, `upgrade_type`, `achievement_at_upgrade`, `invite_count_at_upgrade`, `reward_bonus`, `is_rewarded`, `rewarded_at`, `status`, `reviewed_at`, `reviewer_id`, `operator_id`, `invite_code_id`, `operation_logs`, `remark`, `created_at`, `updated_at`) VALUES
+(2, NULL, 2, 1, 50000.00, 5, 2000.00, 1, NOW(), 4, '2024-03-15 10:30:00', NULL, NULL, NULL, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建升级记录','operator_id',NULL,'operator_name','系统','remark','自动升级检查触发','old_status',2,'new_status',2,'created_at','2024-03-15 10:30:00'), JSON_OBJECT('action','reward','action_label','发放升级奖励','operator_id',1,'operator_name','超级管理员','remark','月度自动发奖','old_status',2,'new_status',4,'created_at',NOW())), '自动升级：满足银牌条件', '2024-03-15 10:30:00', NOW()),
+(2, 2, 3, 1, 150000.00, 15, 5000.00, 1, NOW(), 4, '2024-06-20 14:20:00', NULL, NULL, NULL, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建升级记录','operator_id',NULL,'operator_name','系统','remark','自动升级检查触发','old_status',2,'new_status',2,'created_at','2024-06-20 14:20:00'), JSON_OBJECT('action','reward','action_label','发放升级奖励','operator_id',1,'operator_name','超级管理员','remark','季度升级奖励','old_status',2,'new_status',4,'created_at',NOW())), '自动升级：满足金牌条件', '2024-06-20 14:20:00', NOW()),
+(2, 3, 4, 3, 180000.00, 18, 15000.00, 1, NOW(), 4, '2024-08-10 09:15:00', 1, NULL, 1, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建升级记录','operator_id',NULL,'operator_name','系统','remark','邀请码激活升级','old_status',2,'new_status',2,'created_at','2024-08-10 09:15:00'), JSON_OBJECT('action','approve','action_label','审核通过','operator_id',1,'operator_name','超级管理员','remark','邀请码验证通过','old_status',2,'new_status',2,'created_at','2024-08-10 09:20:00'), JSON_OBJECT('action','reward','action_label','发放升级奖励','operator_id',1,'operator_name','超级管理员','remark','邀请码奖励发放','old_status',2,'new_status',4,'created_at',NOW())), '邀请码升级：使用FOUNDER1', '2024-08-10 09:15:00', NOW()),
+(3, NULL, 2, 1, 52000.00, 6, 2000.00, 1, NOW(), 2, '2024-04-10 11:00:00', NULL, NULL, NULL, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建升级记录','operator_id',NULL,'operator_name','系统','remark','自动升级检查触发','old_status',2,'new_status',2,'created_at','2024-04-10 11:00:00')), '自动升级', '2024-04-10 11:00:00', NOW()),
+(3, 2, 3, 3, 156000.00, 16, 5000.00, 1, NOW(), 2, '2024-09-05 16:30:00', 1, NULL, 2, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建升级记录','operator_id',NULL,'operator_name','系统','remark','邀请码激活升级','old_status',2,'new_status',2,'created_at','2024-09-05 16:30:00'), JSON_OBJECT('action','approve','action_label','审核通过','operator_id',1,'operator_name','超级管理员','remark','资料齐全通过审核','old_status',2,'new_status',2,'created_at','2024-09-05 17:00:00')), '邀请码升级：使用GOLD1234', '2024-09-05 16:30:00', NOW()),
+(4, NULL, 2, 3, 60000.00, 5, 2000.00, 1, NOW(), 2, '2024-07-18 13:45:00', 1, NULL, 3, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建升级记录','operator_id',NULL,'operator_name','系统','remark','邀请码激活升级','old_status',2,'new_status',2,'created_at','2024-07-18 13:45:00'), JSON_OBJECT('action','approve','action_label','审核通过','operator_id',1,'operator_name','超级管理员','remark','有效邀请码','old_status',2,'new_status',2,'created_at','2024-07-18 14:00:00')), '邀请码升级：使用SILVER88', '2024-07-18 13:45:00', NOW()),
+(4, 2, 3, 1, 158000.00, 16, 5000.00, 1, NOW(), 4, '2024-10-12 08:20:00', NULL, NULL, NULL, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建升级记录','operator_id',NULL,'operator_name','系统','remark','自动升级检查触发','old_status',2,'new_status',2,'created_at','2024-10-12 08:20:00'), JSON_OBJECT('action','reward','action_label','发放升级奖励','operator_id',1,'operator_name','超级管理员','remark','月度奖励','old_status',2,'new_status',4,'created_at',NOW())), '自动升级', '2024-10-12 08:20:00', NOW()),
+(5, NULL, 2, 1, 51000.00, 5, 2000.00, 1, NOW(), 2, '2024-11-01 10:10:00', NULL, NULL, NULL, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建升级记录','operator_id',NULL,'operator_name','系统','remark','自动升级检查触发','old_status',2,'new_status',2,'created_at','2024-11-01 10:10:00')), '自动升级', '2024-11-01 10:10:00', NOW()),
+(5, 2, 3, 4, 168000.00, 12, 5000.00, 0, NULL, 1, NULL, NULL, 1, NULL, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建升级记录','operator_id',1,'operator_name','超级管理员','remark','后台手动调整','old_status',1,'new_status',1,'created_at','2024-12-01 15:00:00')), '后台手动调整-待审核', '2024-12-01 15:00:00', NOW()),
+(6, NULL, 2, 1, 50500.00, 5, 2000.00, 1, NOW(), 3, '2024-11-20 17:25:00', 1, NULL, NULL, JSON_ARRAY(JSON_OBJECT('action','create','action_label','创建升级记录','operator_id',NULL,'operator_name','系统','remark','自动升级检查触发','old_status',1,'new_status',1,'created_at','2024-11-20 17:25:00'), JSON_OBJECT('action','reject','action_label','审核拒绝','operator_id',1,'operator_name','超级管理员','remark','业绩数据异常，需重新核实','old_status',1,'new_status',3,'created_at','2024-11-21 10:00:00')), '自动升级-审核拒绝', '2024-11-20 17:25:00', NOW());
 
 -- ========================================================
 -- 迁移记录（让 Laravel 识别已执行的迁移）
@@ -253,7 +268,8 @@ INSERT INTO `migrations` (`migration`, `batch`) VALUES
 ('2024_01_01_000002_create_users_table', 1),
 ('2024_01_01_000003_create_invite_codes_table', 1),
 ('2024_01_01_000004_create_invite_chains_table', 1),
-('2024_01_01_000005_create_upgrade_records_table', 1);
+('2024_01_01_000005_create_upgrade_records_table', 1),
+('2024_01_01_000006_add_status_and_operation_logs_to_invite_chains_and_upgrade_records', 1);
 
 SHOW TABLES;
 SELECT '数据库初始化完成！' AS message;

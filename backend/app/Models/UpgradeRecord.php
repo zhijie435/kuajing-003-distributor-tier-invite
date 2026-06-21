@@ -9,6 +9,16 @@ class UpgradeRecord extends BaseModel
 {
     protected $table = 'upgrade_records';
 
+    const STATUS_PENDING = 1;
+    const STATUS_APPROVED = 2;
+    const STATUS_REJECTED = 3;
+    const STATUS_REWARDED = 4;
+
+    const TYPE_AUTO = 1;
+    const TYPE_MANUAL = 2;
+    const TYPE_INVITE_CODE = 3;
+    const TYPE_ADMIN = 4;
+
     protected $fillable = [
         'user_id',
         'old_level_id',
@@ -22,6 +32,10 @@ class UpgradeRecord extends BaseModel
         'operator_id',
         'invite_code_id',
         'remark',
+        'status',
+        'operation_logs',
+        'reviewed_at',
+        'reviewer_id',
     ];
 
     protected $casts = [
@@ -31,12 +45,10 @@ class UpgradeRecord extends BaseModel
         'reward_bonus' => 'decimal:2',
         'is_rewarded' => 'boolean',
         'rewarded_at' => 'datetime:Y-m-d H:i:s',
+        'status' => 'integer',
+        'operation_logs' => 'array',
+        'reviewed_at' => 'datetime:Y-m-d H:i:s',
     ];
-
-    const TYPE_AUTO = 1;
-    const TYPE_MANUAL = 2;
-    const TYPE_INVITE_CODE = 3;
-    const TYPE_ADMIN = 4;
 
     public function user(): BelongsTo
     {
@@ -61,6 +73,11 @@ class UpgradeRecord extends BaseModel
     public function inviteCode(): BelongsTo
     {
         return $this->belongsTo(InviteCode::class, 'invite_code_id');
+    }
+
+    public function reviewer(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'reviewer_id');
     }
 
     public static function recordUpgrade(
@@ -92,6 +109,26 @@ class UpgradeRecord extends BaseModel
             }
             $newLevel = DealerLevel::find($newLevelId);
             $bonus = $rewardBonus ?? ($newLevel ? $newLevel->reward_bonus : 0);
+            $isAutoOrCode = in_array($type, [self::TYPE_AUTO, self::TYPE_INVITE_CODE]);
+            $initialStatus = $isAutoOrCode
+                ? ($bonus <= 0 ? self::STATUS_REWARDED : self::STATUS_APPROVED)
+                : self::STATUS_PENDING;
+            $initialLogs = [[
+                'action' => 'create',
+                'action_label' => '创建升级记录',
+                'operator_id' => $operatorId,
+                'operator_name' => $operatorId
+                    ? (User::find($operatorId)?->nickname ?: User::find($operatorId)?->username ?: '系统')
+                    : ($type == self::TYPE_AUTO ? '系统自动' : ($type == self::TYPE_INVITE_CODE ? '邀请码系统' : '系统')),
+                'remark' => $remark ?: match ($type) {
+                    self::TYPE_AUTO => '系统自动检测升级',
+                    self::TYPE_MANUAL => '手动申请升级',
+                    self::TYPE_INVITE_CODE => '邀请码升级',
+                    self::TYPE_ADMIN => '后台管理员调整',
+                    default => '等级变更',
+                },
+                'created_at' => now()->toDateTimeString(),
+            ]];
             $record = self::create([
                 'user_id' => $userId,
                 'old_level_id' => $oldLevelId,
@@ -105,6 +142,10 @@ class UpgradeRecord extends BaseModel
                 'operator_id' => $operatorId,
                 'invite_code_id' => $inviteCodeId,
                 'remark' => $remark,
+                'status' => $initialStatus,
+                'reviewed_at' => $isAutoOrCode ? now() : null,
+                'reviewer_id' => $isAutoOrCode ? null : null,
+                'operation_logs' => $initialLogs,
             ]);
             $user->dealer_level_id = $newLevelId;
             $user->save();
@@ -139,10 +180,134 @@ class UpgradeRecord extends BaseModel
         return $this->newLevel->isLowerThan($this->oldLevel);
     }
 
-    public function markRewarded(): bool
+    public function addOperationLog(string $action, string $actionLabel, ?int $operatorId = null, ?string $remark = null): void
     {
+        $logs = is_array($this->operation_logs) ? $this->operation_logs : [];
+        $operator = $operatorId ? User::find($operatorId) : null;
+        $logs[] = [
+            'action' => $action,
+            'action_label' => $actionLabel,
+            'operator_id' => $operatorId,
+            'operator_name' => $operator ? ($operator->nickname ?: $operator->username) : '系统',
+            'remark' => $remark,
+            'old_status' => $this->getOriginal('status'),
+            'new_status' => $this->status,
+            'created_at' => now()->toDateTimeString(),
+        ];
+        $this->operation_logs = $logs;
+    }
+
+    public function getStatusLabel(): string
+    {
+        $labels = [
+            self::STATUS_PENDING => '待审核',
+            self::STATUS_APPROVED => '审核通过',
+            self::STATUS_REJECTED => '审核拒绝',
+            self::STATUS_REWARDED => '已发奖',
+        ];
+        return $labels[$this->status] ?? '未知';
+    }
+
+    public function getStatusTagType(): string
+    {
+        $types = [
+            self::STATUS_PENDING => 'warning',
+            self::STATUS_APPROVED => 'success',
+            self::STATUS_REJECTED => 'danger',
+            self::STATUS_REWARDED => 'primary',
+        ];
+        return $types[$this->status] ?? '';
+    }
+
+    public function isPending(): bool
+    {
+        return $this->status == self::STATUS_PENDING;
+    }
+
+    public function isApproved(): bool
+    {
+        return $this->status == self::STATUS_APPROVED;
+    }
+
+    public function isRejected(): bool
+    {
+        return $this->status == self::STATUS_REJECTED;
+    }
+
+    public function isRewardedStatus(): bool
+    {
+        return $this->status == self::STATUS_REWARDED;
+    }
+
+    public function canApprove(): bool
+    {
+        return $this->status == self::STATUS_PENDING;
+    }
+
+    public function canReject(): bool
+    {
+        return $this->status == self::STATUS_PENDING;
+    }
+
+    public function canReward(): bool
+    {
+        return in_array($this->status, [self::STATUS_PENDING, self::STATUS_APPROVED])
+            && $this->reward_bonus > 0 && !$this->is_rewarded;
+    }
+
+    public function approve(?int $reviewerId = null, ?string $remark = null): bool
+    {
+        if (!$this->canApprove()) {
+            return false;
+        }
+        return DB::transaction(function () use ($reviewerId, $remark) {
+            $this->status = self::STATUS_APPROVED;
+            $this->reviewed_at = now();
+            $this->reviewer_id = $reviewerId;
+            $this->addOperationLog('approve', '审核通过', $reviewerId, $remark ?? '审核通过，升级有效');
+            $result = $this->save();
+            if ($result && $this->reward_bonus <= 0) {
+                $this->is_rewarded = true;
+                $this->rewarded_at = now();
+                $this->status = self::STATUS_REWARDED;
+                $this->addOperationLog('reward', '发放升级奖励', $reviewerId, '无奖励金额，自动标记已发奖');
+                $result = $this->save();
+            }
+            return $result;
+        });
+    }
+
+    public function reject(?int $reviewerId = null, ?string $remark = null): bool
+    {
+        if (!$this->canReject()) {
+            return false;
+        }
+        return DB::transaction(function () use ($reviewerId, $remark) {
+            $this->status = self::STATUS_REJECTED;
+            $this->reviewed_at = now();
+            $this->reviewer_id = $reviewerId;
+            $this->addOperationLog('reject', '审核拒绝', $reviewerId, $remark ?? '审核不通过');
+            $result = $this->save();
+            if ($result && $this->old_level_id) {
+                $user = User::find($this->user_id);
+                if ($user) {
+                    $user->dealer_level_id = $this->old_level_id;
+                    $user->save();
+                }
+            }
+            return $result;
+        });
+    }
+
+    public function markRewarded(?int $operatorId = null, ?string $remark = null): bool
+    {
+        if ($this->status == self::STATUS_PENDING) {
+            $this->approve($operatorId, '发奖前自动审核通过');
+        }
         $this->is_rewarded = true;
         $this->rewarded_at = now();
+        $this->status = self::STATUS_REWARDED;
+        $this->addOperationLog('reward', '发放升级奖励', $operatorId, $remark ?? ('发放升级奖励 ' . $this->reward_bonus . ' 元'));
         return $this->save();
     }
 
@@ -164,6 +329,34 @@ class UpgradeRecord extends BaseModel
     public function scopeReward($query)
     {
         return $query->where('reward_bonus', '>', 0);
+    }
+
+    public function scopeByStatus($query, $status)
+    {
+        if (is_array($status)) {
+            return $query->whereIn('status', $status);
+        }
+        return $query->where('status', $status);
+    }
+
+    public function scopePending($query)
+    {
+        return $query->where('status', self::STATUS_PENDING);
+    }
+
+    public function scopeApproved($query)
+    {
+        return $query->where('status', self::STATUS_APPROVED);
+    }
+
+    public function scopeRejected($query)
+    {
+        return $query->where('status', self::STATUS_REJECTED);
+    }
+
+    public function scopeNotRejected($query)
+    {
+        return $query->where('status', '!=', self::STATUS_REJECTED);
     }
 
     public function scopeInDateRange($query, string $startDate, string $endDate)
@@ -197,7 +390,11 @@ class UpgradeRecord extends BaseModel
             DB::raw("SUM(CASE WHEN upgrade_type = " . self::TYPE_AUTO . " THEN 1 ELSE 0 END) as auto_count"),
             DB::raw("SUM(CASE WHEN upgrade_type = " . self::TYPE_MANUAL . " THEN 1 ELSE 0 END) as manual_count"),
             DB::raw("SUM(CASE WHEN upgrade_type = " . self::TYPE_INVITE_CODE . " THEN 1 ELSE 0 END) as code_count"),
-            DB::raw("SUM(CASE WHEN upgrade_type = " . self::TYPE_ADMIN . " THEN 1 ELSE 0 END) as admin_count")
+            DB::raw("SUM(CASE WHEN upgrade_type = " . self::TYPE_ADMIN . " THEN 1 ELSE 0 END) as admin_count"),
+            DB::raw("SUM(CASE WHEN status = " . self::STATUS_PENDING . " THEN 1 ELSE 0 END) as review_pending_count"),
+            DB::raw("SUM(CASE WHEN status = " . self::STATUS_APPROVED . " THEN 1 ELSE 0 END) as approved_count"),
+            DB::raw("SUM(CASE WHEN status = " . self::STATUS_REJECTED . " THEN 1 ELSE 0 END) as rejected_count"),
+            DB::raw("SUM(CASE WHEN status = " . self::STATUS_REWARDED . " THEN 1 ELSE 0 END) as reward_done_count")
         )
         ->first()
         ->toArray();
@@ -210,6 +407,10 @@ class UpgradeRecord extends BaseModel
             'manual_count' => (int)$stats['manual_count'],
             'code_count' => (int)$stats['code_count'],
             'admin_count' => (int)$stats['admin_count'],
+            'review_pending_count' => (int)$stats['review_pending_count'],
+            'approved_count' => (int)$stats['approved_count'],
+            'rejected_count' => (int)$stats['rejected_count'],
+            'reward_done_count' => (int)$stats['reward_done_count'],
         ];
     }
 }

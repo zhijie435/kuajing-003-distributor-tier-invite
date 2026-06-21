@@ -15,7 +15,7 @@ class InviteChainController extends Controller
 {
     public function index(Request $request)
     {
-        $query = InviteChain::with(['inviter', 'invitee', 'inviteCode']);
+        $query = InviteChain::with(['inviter', 'invitee', 'inviteCode', 'operator']);
         if ($request->has('inviter_id')) {
             $query->where('inviter_id', $request->input('inviter_id'));
         }
@@ -40,6 +40,25 @@ class InviteChainController extends Controller
         if ($request->has('is_rewarded')) {
             $query->where('is_rewarded', $request->boolean('is_rewarded'));
         }
+        if ($request->has('status')) {
+            $status = $request->input('status');
+            $query->byStatus($status);
+        }
+        if ($request->has('not_cancelled') && $request->boolean('not_cancelled')) {
+            $query->notCancelled();
+        }
+        if ($request->has('keyword')) {
+            $keyword = '%' . $request->input('keyword') . '%';
+            $query->where(function ($q) use ($keyword) {
+                $q->whereHas('inviter', function ($sub) use ($keyword) {
+                    $sub->where('username', 'like', $keyword)
+                        ->orWhere('nickname', 'like', $keyword);
+                })->orWhereHas('invitee', function ($sub) use ($keyword) {
+                    $sub->where('username', 'like', $keyword)
+                        ->orWhere('nickname', 'like', $keyword);
+                })->orWhere('remark', 'like', $keyword);
+            });
+        }
         $sortField = $request->input('sort_by', 'created_at');
         $sortOrder = $request->input('sort_order', 'desc');
         $query->orderBy($sortField, $sortOrder);
@@ -52,11 +71,18 @@ class InviteChainController extends Controller
 
     public function show($id)
     {
-        $chain = InviteChain::with(['inviter', 'invitee.dealerLevel', 'inviteCode'])->find($id);
+        $chain = InviteChain::with(['inviter', 'invitee.dealerLevel', 'inviteCode', 'operator'])->find($id);
         if (!$chain) {
             return $this->error('邀请记录不存在', 404);
         }
-        return $this->success($chain);
+        $data = $chain->toArray();
+        $data['status_label'] = $chain->getStatusLabel();
+        $data['status_tag_type'] = $chain->getStatusTagType();
+        $data['is_direct'] = $chain->isDirectInvite();
+        $data['can_confirm'] = $chain->canConfirm();
+        $data['can_cancel'] = $chain->canCancel();
+        $data['can_reward'] = !$chain->is_rewarded && $chain->reward_amount > 0 && $chain->isConfirmed();
+        return $this->success($data);
     }
 
     public function useInviteCode(Request $request)
@@ -334,7 +360,7 @@ class InviteChainController extends Controller
         ]);
     }
 
-    public function markRewarded($id)
+    public function markRewarded(Request $request, $id)
     {
         $chain = InviteChain::find($id);
         if (!$chain) {
@@ -343,8 +369,21 @@ class InviteChainController extends Controller
         if ($chain->is_rewarded) {
             return $this->error('奖励已发放');
         }
-        $chain->markRewarded();
-        return $this->success($chain, '奖励已发放');
+        if (!$chain->isConfirmed()) {
+            return $this->error('请先确认邀请关系后再发放奖励');
+        }
+        $validator = Validator::make($request->all(), [
+            'operator_id' => 'nullable|integer|exists:users,id',
+            'remark' => 'nullable|string|max:500',
+        ]);
+        if ($validator->fails()) {
+            return $this->error('参数验证失败', 422, $validator->errors());
+        }
+        $chain->markRewarded(
+            $request->input('operator_id'),
+            $request->input('remark')
+        );
+        return $this->success($chain->load(['operator']), '奖励已发放');
     }
 
     public function batchMarkRewarded(Request $request)
@@ -352,16 +391,123 @@ class InviteChainController extends Controller
         $validator = Validator::make($request->all(), [
             'chain_ids' => 'required|array|min:1',
             'chain_ids.*' => 'integer|exists:invite_chains,id',
+            'operator_id' => 'nullable|integer|exists:users,id',
+            'remark' => 'nullable|string|max:500',
         ]);
         if ($validator->fails()) {
             return $this->error('参数验证失败', 422, $validator->errors());
         }
-        $count = InviteChain::whereIn('id', $request->input('chain_ids'))
+        $operatorId = $request->input('operator_id');
+        $remark = $request->input('remark');
+        $chains = InviteChain::whereIn('id', $request->input('chain_ids'))
             ->where('is_rewarded', false)
-            ->update([
-                'is_rewarded' => true,
-                'rewarded_at' => now(),
-            ]);
+            ->get();
+        $count = 0;
+        foreach ($chains as $chain) {
+            if ($chain->markRewarded($operatorId, $remark)) {
+                $count++;
+            }
+        }
         return $this->success(['updated_count' => $count], "成功标记{$count}条记录为已发放");
+    }
+
+    public function confirm(Request $request, $id)
+    {
+        $chain = InviteChain::find($id);
+        if (!$chain) {
+            return $this->error('邀请记录不存在', 404);
+        }
+        if (!$chain->canConfirm()) {
+            return $this->error('当前状态不可确认，仅待确认记录可操作');
+        }
+        $validator = Validator::make($request->all(), [
+            'operator_id' => 'nullable|integer|exists:users,id',
+            'remark' => 'nullable|string|max:500',
+        ]);
+        if ($validator->fails()) {
+            return $this->error('参数验证失败', 422, $validator->errors());
+        }
+        $chain->confirm(
+            $request->input('operator_id'),
+            $request->input('remark')
+        );
+        return $this->success($chain->fresh()->load(['operator']), '邀请关系已确认');
+    }
+
+    public function cancel(Request $request, $id)
+    {
+        $chain = InviteChain::find($id);
+        if (!$chain) {
+            return $this->error('邀请记录不存在', 404);
+        }
+        if (!$chain->canCancel()) {
+            return $this->error('当前状态不可取消，已取消或已发奖记录无法操作');
+        }
+        $validator = Validator::make($request->all(), [
+            'operator_id' => 'nullable|integer|exists:users,id',
+            'remark' => 'nullable|string|max:500',
+        ]);
+        if ($validator->fails()) {
+            return $this->error('参数验证失败', 422, $validator->errors());
+        }
+        if ($chain->isRewarded()) {
+            return $this->error('已发放奖励的邀请记录不可取消');
+        }
+        $chain->cancel(
+            $request->input('operator_id'),
+            $request->input('remark')
+        );
+        return $this->success($chain->fresh()->load(['operator']), '邀请关系已取消');
+    }
+
+    public function batchConfirm(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'chain_ids' => 'required|array|min:1',
+            'chain_ids.*' => 'integer|exists:invite_chains,id',
+            'operator_id' => 'nullable|integer|exists:users,id',
+            'remark' => 'nullable|string|max:500',
+        ]);
+        if ($validator->fails()) {
+            return $this->error('参数验证失败', 422, $validator->errors());
+        }
+        $operatorId = $request->input('operator_id');
+        $remark = $request->input('remark');
+        $chains = InviteChain::whereIn('id', $request->input('chain_ids'))
+            ->pending()
+            ->get();
+        $count = 0;
+        foreach ($chains as $chain) {
+            if ($chain->confirm($operatorId, $remark)) {
+                $count++;
+            }
+        }
+        return $this->success(['updated_count' => $count], "成功确认{$count}条邀请记录");
+    }
+
+    public function batchCancel(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'chain_ids' => 'required|array|min:1',
+            'chain_ids.*' => 'integer|exists:invite_chains,id',
+            'operator_id' => 'nullable|integer|exists:users,id',
+            'remark' => 'nullable|string|max:500',
+        ]);
+        if ($validator->fails()) {
+            return $this->error('参数验证失败', 422, $validator->errors());
+        }
+        $operatorId = $request->input('operator_id');
+        $remark = $request->input('remark');
+        $chains = InviteChain::whereIn('id', $request->input('chain_ids'))
+            ->whereIn('status', [InviteChain::STATUS_PENDING, InviteChain::STATUS_CONFIRMED])
+            ->where('is_rewarded', false)
+            ->get();
+        $count = 0;
+        foreach ($chains as $chain) {
+            if ($chain->cancel($operatorId, $remark)) {
+                $count++;
+            }
+        }
+        return $this->success(['updated_count' => $count], "成功取消{$count}条邀请记录");
     }
 }

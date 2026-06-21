@@ -38,6 +38,10 @@ Route::prefix('api')->middleware('api')->group(function () {
         Route::post('/create', [\App\Http\Controllers\Api\InviteChainController::class, 'createDirectInvite']);
         Route::patch('/{id}/reward', [\App\Http\Controllers\Api\InviteChainController::class, 'markRewarded']);
         Route::patch('/batch/reward', [\App\Http\Controllers\Api\InviteChainController::class, 'batchMarkRewarded']);
+        Route::patch('/{id}/confirm', [\App\Http\Controllers\Api\InviteChainController::class, 'confirm']);
+        Route::patch('/{id}/cancel', [\App\Http\Controllers\Api\InviteChainController::class, 'cancel']);
+        Route::patch('/batch/confirm', [\App\Http\Controllers\Api\InviteChainController::class, 'batchConfirm']);
+        Route::patch('/batch/cancel', [\App\Http\Controllers\Api\InviteChainController::class, 'batchCancel']);
     });
 
     Route::prefix('upgrade-records')->group(function () {
@@ -50,6 +54,10 @@ Route::prefix('api')->middleware('api')->group(function () {
         Route::patch('/{id}/reward', [\App\Http\Controllers\Api\UpgradeRecordController::class, 'markRewarded']);
         Route::patch('/batch/reward', [\App\Http\Controllers\Api\UpgradeRecordController::class, 'batchMarkRewarded']);
         Route::patch('/reward-all-pending', [\App\Http\Controllers\Api\UpgradeRecordController::class, 'markAllPendingRewarded']);
+        Route::patch('/{id}/approve', [\App\Http\Controllers\Api\UpgradeRecordController::class, 'approve']);
+        Route::patch('/{id}/reject', [\App\Http\Controllers\Api\UpgradeRecordController::class, 'reject']);
+        Route::patch('/batch/approve', [\App\Http\Controllers\Api\UpgradeRecordController::class, 'batchApprove']);
+        Route::patch('/batch/reject', [\App\Http\Controllers\Api\UpgradeRecordController::class, 'batchReject']);
     });
 
     Route::prefix('users')->group(function () {

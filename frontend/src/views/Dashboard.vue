@@ -17,7 +17,7 @@
         </div>
       </div>
       <div class="stat-card">
-        <div class="stat-label"><el-icon><Crown /></el-icon>有等级用户</div>
+        <div class="stat-label"><el-icon><Star /></el-icon>有等级用户</div>
         <div class="stat-value">{{ userStats?.users_with_dealer_level || 0 }}</div>
         <div class="stat-footer">
           占比 {{ dealerLevelPercent }}%
@@ -118,7 +118,7 @@
 
 <script setup>
 import { ref, onMounted, computed, watch, nextTick } from 'vue'
-import { Refresh, User, Crown, Wallet, Share, Key, TrendCharts } from '@element-plus/icons-vue'
+import { Refresh, User, Star, Wallet, Share, Key, TrendCharts } from '@element-plus/icons-vue'
 import { dashboardApi } from '@/api'
 import * as echarts from 'echarts'
 

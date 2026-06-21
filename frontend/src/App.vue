@@ -21,7 +21,7 @@
           <span>用户管理</span>
         </el-menu-item>
         <el-menu-item index="/dealer-levels">
-          <el-icon><Crown /></el-icon>
+          <el-icon><Star /></el-icon>
           <span>等级管理</span>
         </el-menu-item>
         <el-menu-item index="/invite-codes">

@@ -23,20 +23,23 @@
         <div class="stat-footer">累计奖励 {{ formatMoney(stats?.overall?.total_bonus || 0) }} 元</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label" style="color:#67c23a">自动升级</div>
-        <div class="stat-value" style="color:#67c23a">{{ stats?.overall?.auto_count || 0 }}</div>
+        <div class="stat-label" style="color:#e6a23c">待审核</div>
+        <div class="stat-value" style="color:#e6a23c">{{ stats?.overall?.review_pending_count || 0 }}<span class="unit">条</span></div>
+        <div class="stat-footer" v-if="(stats?.overall?.review_pending_count || 0) > 0">
+          <el-button link type="warning" size="small" @click="quickFilterByStatus(1)">立即审核</el-button>
+        </div>
       </div>
       <div class="stat-card">
-        <div class="stat-label" style="color:#409eff">邀请码升级</div>
-        <div class="stat-value" style="color:#409eff">{{ stats?.overall?.code_count || 0 }}</div>
+        <div class="stat-label" style="color:#67c23a">审核通过</div>
+        <div class="stat-value" style="color:#67c23a">{{ stats?.overall?.approved_count || 0 }}<span class="unit">条</span></div>
       </div>
       <div class="stat-card">
-        <div class="stat-label" style="color:#e6a23c">手动升级</div>
-        <div class="stat-value" style="color:#e6a23c">{{ stats?.overall?.manual_count || 0 }}</div>
+        <div class="stat-label" style="color:#f56c6c">审核拒绝</div>
+        <div class="stat-value" style="color:#f56c6c">{{ stats?.overall?.rejected_count || 0 }}<span class="unit">条</span></div>
       </div>
       <div class="stat-card">
-        <div class="stat-label" style="color:#909399">后台调整</div>
-        <div class="stat-value" style="color:#909399">{{ stats?.overall?.admin_count || 0 }}</div>
+        <div class="stat-label" style="color:#409eff">已发奖</div>
+        <div class="stat-value" style="color:#409eff">{{ stats?.overall?.reward_done_count || 0 }}<span class="unit">笔</span></div>
       </div>
       <div class="stat-card">
         <div class="stat-label" style="color:#f56c6c">待发放奖励</div>
@@ -74,6 +77,14 @@
       <el-form :inline="true" :model="filters" @submit.prevent>
         <el-form-item label="用户">
           <el-input v-model="filters.keyword" placeholder="用户名/昵称" clearable style="width:160px" />
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-select v-model="filters.status" placeholder="全部" clearable style="width:130px">
+            <el-option label="待审核" :value="1" />
+            <el-option label="审核通过" :value="2" />
+            <el-option label="审核拒绝" :value="3" />
+            <el-option label="已发奖" :value="4" />
+          </el-select>
         </el-form-item>
         <el-form-item label="升级类型">
           <el-select v-model="filters.upgrade_type" placeholder="全部" clearable style="width:140px">
@@ -116,7 +127,20 @@
     </div>
 
     <div class="table-wrapper">
-      <el-table :data="list" v-loading="loading" stripe>
+      <div style="margin-bottom:10px" v-if="selectedRows.length">
+        <span style="color:#606266;font-size:13px">已选 <b style="color:#409eff">{{ selectedRows.length }}</b> 条</span>
+        <el-button size="small" type="success" link style="margin-left:12px" @click="batchApprove">
+          批量审核通过
+        </el-button>
+        <el-button size="small" type="danger" link style="margin-left:8px" @click="batchReject">
+          批量审核拒绝
+        </el-button>
+        <el-button size="small" type="warning" link style="margin-left:8px" @click="batchReward">
+          批量发放奖励
+        </el-button>
+      </div>
+      <el-table :data="list" v-loading="loading" stripe @selection-change="(val) => selectedRows = val">
+        <el-table-column type="selection" width="42" align="center" />
         <el-table-column type="index" label="#" width="60" align="center" />
         <el-table-column label="用户" width="180">
           <template #default="{ row }">
@@ -143,6 +167,17 @@
                 {{ row.new_level?.name }}
               </el-tag>
             </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag
+              size="small"
+              :type="getUpgradeStatusTagType(row.status)"
+              effect="light"
+            >
+              {{ getUpgradeStatusLabel(row.status) }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="类型" width="110" align="center">
@@ -179,6 +214,12 @@
             <span v-else style="color:#c0c4cc;font-size:12px">无奖励</span>
           </template>
         </el-table-column>
+        <el-table-column label="最后审核人" width="110">
+          <template #default="{ row }">
+            <span v-if="row.reviewer">{{ row.reviewer.nickname || row.reviewer.username }}</span>
+            <span v-else style="color:#c0c4cc;font-size:12px">--</span>
+          </template>
+        </el-table-column>
         <el-table-column label="操作人" width="110">
           <template #default="{ row }">
             <span v-if="row.operator">{{ row.operator.nickname || row.operator.username }}</span>
@@ -194,28 +235,34 @@
           </template>
         </el-table-column>
         <el-table-column prop="created_at" label="时间" width="170" align="center" />
-        <el-table-column label="操作" width="120" align="center" fixed="right">
+        <el-table-column label="操作" width="220" align="center" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="viewDetail(row)">详情</el-button>
             <el-button
-              v-if="!row.is_rewarded && row.reward_bonus > 0"
+              v-if="row.status === 1"
               link
               type="success"
               size="small"
+              @click="approveRecord(row)"
+            >通过</el-button>
+            <el-button
+              v-if="row.status === 1"
+              link
+              type="danger"
+              size="small"
+              @click="rejectRecord(row)"
+            >拒绝</el-button>
+            <el-button
+              v-if="!row.is_rewarded && row.reward_bonus > 0 && row.status === 2"
+              link
+              type="warning"
+              size="small"
               @click="markRewarded(row)"
-            >
-              发奖
-            </el-button>
+            >发奖</el-button>
           </template>
         </el-table-column>
       </el-table>
       <div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center">
-        <div v-if="selectedRows.length" style="color:#606266;font-size:13px">
-          已选 <b style="color:#409eff">{{ selectedRows.length }}</b> 条
-          <el-button size="small" type="success" link style="margin-left:12px" @click="batchReward">
-            批量发放奖励
-          </el-button>
-        </div>
         <el-pagination
           v-model:current-page="pagination.page"
           v-model:page-size="pagination.page_size"
@@ -367,39 +414,50 @@
       </div>
     </el-dialog>
 
-    <el-drawer v-model="detailVisible" title="升级详情" size="440px">
+    <el-drawer v-model="detailVisible" title="升级详情" size="500px" direction="rtl">
       <div v-if="currentDetail">
-        <div style="padding:16px;background:linear-gradient(135deg,#f0f9ff,#e0f2fe);border-radius:8px;margin-bottom:20px;text-align:center">
-          <div style="font-size:26px;font-weight:700;color:#0369a1">
+        <div style="padding:16px;background:linear-gradient(135deg,#f0f9ff,#e0f2fe);border-radius:8px;margin-bottom:16px;text-align:center">
+          <div style="font-size:22px;font-weight:700;color:#0369a1">
             {{ currentDetail.old_level ? currentDetail.old_level.name : '无等级' }}
             <el-icon style="vertical-align:-4px;margin:0 12px;color:#67c23a"><Right /></el-icon>
             <span style="color:#16a34a">{{ currentDetail.new_level?.name }}</span>
           </div>
-          <el-tag style="margin-top:10px" :type="getUpgradeTypeTagType(currentDetail.upgrade_type)" size="large">
-            {{ getUpgradeTypeLabel(currentDetail.upgrade_type) }}
-          </el-tag>
+          <div style="margin-top:10px">
+            <el-tag :type="getUpgradeStatusTagType(currentDetail.status)" size="large">
+              {{ getUpgradeStatusLabel(currentDetail.status) }}
+            </el-tag>
+            <el-tag style="margin-left:8px" :type="getUpgradeTypeTagType(currentDetail.upgrade_type)" size="large">
+              {{ getUpgradeTypeLabel(currentDetail.upgrade_type) }}
+            </el-tag>
+          </div>
+          <div style="margin-top:6px;font-size:12px;color:#64748b">
+            {{ currentDetail.user?.nickname || currentDetail.user?.username }}
+            <span style="margin:0 6px">·</span>
+            升级时业绩: {{ formatMoney(currentDetail.achievement_at_upgrade) }}
+            <span style="margin:0 6px">·</span>
+            邀请{{ currentDetail.invite_count_at_upgrade }}人
+          </div>
         </div>
         <el-descriptions :column="1" border size="small">
           <el-descriptions-item label="用户">
             {{ currentDetail.user?.nickname || currentDetail.user?.username }}
-          </el-descriptions-item>
-          <el-descriptions-item label="升级时业绩">
-            {{ formatMoney(currentDetail.achievement_at_upgrade) }} 元
-          </el-descriptions-item>
-          <el-descriptions-item label="升级时邀请数">
-            {{ currentDetail.invite_count_at_upgrade }} 人
+            <span style="color:#909399;margin-left:4px">(ID: {{ currentDetail.user_id }})</span>
           </el-descriptions-item>
           <el-descriptions-item label="升级奖励">
-            <span style="color:#f56c6c;font-weight:600;font-size:16px">
-              {{ formatMoney(currentDetail.reward_bonus) }} 元
+            <span v-if="currentDetail.reward_bonus > 0" style="color:#f56c6c;font-weight:600;font-size:15px">
+              +{{ formatMoney(currentDetail.reward_bonus) }} 元
             </span>
+            <span v-else style="color:#c0c4cc">无升级奖励</span>
           </el-descriptions-item>
           <el-descriptions-item label="奖励状态">
             <el-tag :type="currentDetail.is_rewarded ? 'success' : 'warning'">
               {{ currentDetail.is_rewarded ? `已发放 (${currentDetail.rewarded_at || ''})` : '待发放' }}
             </el-tag>
           </el-descriptions-item>
-          <el-descriptions-item label="操作人">
+          <el-descriptions-item label="审核人">
+            {{ currentDetail.reviewer?.nickname || currentDetail.reviewer?.username || '--' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="创建操作人">
             {{ currentDetail.operator?.nickname || '系统自动' }}
           </el-descriptions-item>
           <el-descriptions-item label="关联邀请码">
@@ -407,9 +465,59 @@
           </el-descriptions-item>
           <el-descriptions-item label="备注">{{ currentDetail.remark || '--' }}</el-descriptions-item>
           <el-descriptions-item label="升级时间">{{ currentDetail.created_at }}</el-descriptions-item>
+          <el-descriptions-item label="审核时间">{{ currentDetail.reviewed_at || '--' }}</el-descriptions-item>
         </el-descriptions>
+
+        <div style="margin-top:24px">
+          <div style="font-size:14px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:6px">
+            <el-icon><Clock /></el-icon>操作记录时间线
+          </div>
+          <el-timeline v-if="currentDetail.operation_logs?.length">
+            <el-timeline-item
+              v-for="(log, idx) in [...currentDetail.operation_logs].reverse()"
+              :key="idx"
+              :timestamp="log.created_at"
+              :type="getTimelineType(log.action)"
+              placement="top"
+            >
+              <div style="font-size:13px">
+                <div style="font-weight:600;margin-bottom:4px">
+                  <el-tag size="small" :type="getTimelineType(log.action)" effect="light">
+                    {{ log.action_label }}
+                  </el-tag>
+                  <span style="margin-left:8px;color:#606266">{{ log.operator_name }}</span>
+                </div>
+                <div style="color:#909399;font-size:12px" v-if="log.remark">{{ log.remark }}</div>
+                <div style="color:#c0c4cc;font-size:11px;margin-top:2px" v-if="log.old_status !== log.new_status">
+                  {{ getUpgradeStatusLabel(log.old_status) }} → {{ getUpgradeStatusLabel(log.new_status) }}
+                </div>
+              </div>
+            </el-timeline-item>
+          </el-timeline>
+          <el-empty v-else description="暂无操作记录" :image-size="80" />
+        </div>
       </div>
     </el-drawer>
+
+    <el-dialog v-model="remarkDialogVisible" :title="remarkDialogTitle" width="440px" destroy-on-close>
+      <el-form :model="remarkForm" label-width="80px">
+        <el-form-item label="操作人ID">
+          <el-input v-model="remarkForm.operator_id" placeholder="可选，默认为当前系统" />
+        </el-form-item>
+        <el-form-item :label="remarkAction === 'reject' || remarkAction === 'batch_reject' ? '拒绝原因' : '操作备注'">
+          <el-input
+            v-model="remarkForm.remark"
+            type="textarea"
+            :rows="3"
+            :placeholder="remarkAction === 'reject' || remarkAction === 'batch_reject' ? '请输入审核拒绝的原因' : '可选，备注说明'"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="remarkDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitRemarkAction">确认提交</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -417,7 +525,7 @@
 import { ref, reactive, onMounted, nextTick, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  Plus, Search, RefreshLeft, MagicStick, Money, TrendCharts, Right
+  Plus, Search, RefreshLeft, MagicStick, Money, TrendCharts, Right, Clock
 } from '@element-plus/icons-vue'
 import { upgradeRecordApi, dealerLevelApi, userApi } from '@/api'
 import * as echarts from 'echarts'
@@ -430,6 +538,7 @@ const byLevelData = ref([])
 const selectedRows = ref([])
 const filters = reactive({
   keyword: '',
+  status: '',
   upgrade_type: '',
   new_level_id: '',
   is_rewarded: '',
@@ -461,9 +570,40 @@ const autoResult = ref(null)
 const detailVisible = ref(false)
 const currentDetail = ref(null)
 
+const remarkDialogVisible = ref(false)
+const remarkDialogTitle = ref('')
+const remarkAction = ref('')
+const remarkTargetId = ref(null)
+const remarkTargetIds = ref(null)
+const remarkForm = reactive({ operator_id: '', remark: '' })
+
 const formatMoney = (v) => Number(v || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2 })
 const getUpgradeTypeLabel = (t) => ({ 1: '自动升级', 2: '手动升级', 3: '邀请码升级', 4: '后台调整' }[t] || '未知')
 const getUpgradeTypeTagType = (t) => ({ 1: 'success', 2: 'warning', 3: 'primary', 4: 'info' }[t] || '')
+
+const getUpgradeStatusLabel = (s) => ({
+  1: '待审核', 2: '审核通过', 3: '审核拒绝', 4: '已发奖'
+}[s] || '未知')
+
+const getUpgradeStatusTagType = (s) => ({
+  1: 'warning', 2: 'success', 3: 'danger', 4: 'primary'
+}[s] || '')
+
+const getTimelineType = (action) => ({
+  'create': 'primary',
+  'confirm': 'success',
+  'cancel': 'info',
+  'reward': 'warning',
+  'add_commission': 'primary',
+  'approve': 'success',
+  'reject': 'danger',
+}[action] || '')
+
+const quickFilterByStatus = (status) => {
+  filters.status = status
+  pagination.page = 1
+  loadList()
+}
 
 const loadLevels = async () => {
   try {
@@ -486,7 +626,8 @@ const loadStats = async () => {
     stats.value = {
       overall: {
         total_upgrades: 428, total_bonus: 268800, rewarded_count: 396, pending_count: 32,
-        auto_count: 312, manual_count: 25, code_count: 78, admin_count: 13
+        auto_count: 312, manual_count: 25, code_count: 78, admin_count: 13,
+        review_pending_count: 18, approved_count: 382, rejected_count: 12, reward_done_count: 396
       },
       pending_rewards_total: 52800,
       by_level: [
@@ -504,6 +645,7 @@ const loadList = async () => {
   try {
     const params = {
       ...filters,
+      status: filters.status === '' ? undefined : filters.status,
       start_date: filters.date_range?.[0],
       end_date: filters.date_range?.[1],
       page: pagination.page,
@@ -534,24 +676,57 @@ const buildMockList = () => {
     { id: 3, name: '金牌经销商' }, { id: 4, name: '铂金经销商' }
   ]
   const types = [1, 1, 1, 3, 2, 1, 4, 3]
+  const statuses = [2, 2, 4, 2, 1, 2, 3, 2, 4, 1, 2, 2, 1, 3, 2]
   return Array.from({ length: 20 }, (_, i) => {
     const from = Math.min(i % 3, 2)
     const to = from + 1
     const type = types[i % 8]
     const bonus = [0, 2000, 5000, 10000, 20000][i % 5]
+    const status = statuses[i % 15]
+    const rewarded = status === 4
+    const logs = []
+    logs.push({
+      action: 'create', action_label: '创建升级记录',
+      operator_id: null, operator_name: type === 2 || type === 4 ? '管理员' : '系统',
+      remark: type === 1 ? '自动升级检查触发' : type === 3 ? '邀请码激活升级' : '后台操作',
+      old_status: status, new_status: status,
+      created_at: `2024-${String(i % 12 + 1).padStart(2, '0')}-${String(i % 28 + 1).padStart(2, '0')} 1${i % 10}:00:00`
+    })
+    if (status >= 2 && status !== 1) {
+      logs.push({
+        action: 'approve', action_label: status === 3 ? '审核拒绝' : '审核通过',
+        operator_id: 1, operator_name: '管理员',
+        remark: status === 3 ? '不符合升级条件，予以拒绝' : '审核通过，资料齐全',
+        old_status: 1, new_status: status === 3 ? 3 : 2,
+        created_at: `2024-${String(i % 12 + 1).padStart(2, '0')}-${String(i % 28 + 1).padStart(2, '0')} 1${i % 10}:15:00`
+      })
+    }
+    if (status === 4) {
+      logs.push({
+        action: 'reward', action_label: '发放升级奖励',
+        operator_id: 1, operator_name: '管理员',
+        remark: '批量发放奖励',
+        old_status: 2, new_status: 4,
+        created_at: `2024-${String(i % 12 + 1).padStart(2, '0')}-${String(i % 28 + 3).padStart(2, '0')} 10:00:00`
+      })
+    }
     return {
       id: i + 1,
       user: users[i % 3], user_id: users[i % 3].id,
       old_level: from === 0 ? null : levels[from - 1],
       new_level: levels[to],
       upgrade_type: type,
+      status,
       achievement_at_upgrade: Math.floor(Math.random() * 500000),
       invite_count_at_upgrade: Math.floor(Math.random() * 50),
       reward_bonus: bonus,
-      is_rewarded: bonus === 0 ? true : i % 3 !== 0,
-      rewarded_at: i % 3 !== 0 ? `2024-${String(i % 12 + 1).padStart(2, '0')}-15 10:00:00` : null,
+      is_rewarded: bonus === 0 ? true : rewarded,
+      rewarded_at: rewarded ? `2024-${String(i % 12 + 1).padStart(2, '0')}-15 10:00:00` : null,
+      reviewed_at: status >= 2 ? `2024-${String(i % 12 + 1).padStart(2, '0')}-${String(i % 28 + 1).padStart(2, '0')} 1${i % 10}:15:00` : null,
+      reviewer: status >= 2 ? { nickname: '管理员', username: 'admin' } : null,
       operator: type === 4 ? { nickname: '管理员' } : null,
       invite_code: type === 3 ? { code: `INV${String(i + 1).padStart(6, '0')}` } : null,
+      operation_logs: logs,
       remark: '',
       created_at: `2024-${String(i % 12 + 1).padStart(2, '0')}-${String(i % 28 + 1).padStart(2, '0')} 1${i % 10}:${String(i * 3 % 60).padStart(2, '0')}:00`
     }
@@ -669,30 +844,78 @@ const viewDetail = async (row) => {
   detailVisible.value = true
 }
 
-const markRewarded = async (row) => {
-  try {
-    await upgradeRecordApi.markRewarded(row.id)
-    ElMessage.success('奖励已发放')
-    row.is_rewarded = true
-    loadStats()
-  } catch {
-    row.is_rewarded = true
-    ElMessage.success('奖励已发放（模拟）')
-  }
+const openRemarkDialog = (action, id, title, ids = null) => {
+  remarkAction.value = action
+  remarkTargetId.value = id
+  remarkTargetIds.value = ids
+  remarkDialogTitle.value = title
+  remarkForm.operator_id = ''
+  remarkForm.remark = ''
+  remarkDialogVisible.value = true
 }
 
-const batchReward = async () => {
-  const ids = selectedRows.value.filter(r => !r.is_rewarded && r.reward_bonus > 0).map(r => r.id)
-  if (!ids.length) return ElMessage.warning('没有待发放的奖励')
+const submitRemarkAction = async () => {
+  const action = remarkAction.value
+  const id = remarkTargetId.value
+  const ids = remarkTargetIds.value
+  const payload = {
+    operator_id: remarkForm.operator_id || undefined,
+    remark: remarkForm.remark || undefined,
+  }
   try {
-    await upgradeRecordApi.batchMarkRewarded({ record_ids: ids })
-    ElMessage.success(`成功发放 ${ids.length} 条奖励`)
+    if (action === 'approve') {
+      await upgradeRecordApi.approve(id, payload)
+    } else if (action === 'reject') {
+      await upgradeRecordApi.reject(id, payload)
+    } else if (action === 'reward') {
+      await upgradeRecordApi.markRewarded(id, payload)
+    } else if (action === 'batch_approve') {
+      await upgradeRecordApi.batchApprove({ record_ids: ids, ...payload })
+    } else if (action === 'batch_reject') {
+      await upgradeRecordApi.batchReject({ record_ids: ids, ...payload })
+    } else if (action === 'batch_reward') {
+      await upgradeRecordApi.batchMarkRewarded({ record_ids: ids, ...payload })
+    }
+    ElMessage.success('操作成功')
+    remarkDialogVisible.value = false
     loadList()
     loadStats()
   } catch {
-    selectedRows.value.forEach(r => { if (!r.is_rewarded && r.reward_bonus > 0) r.is_rewarded = true })
-    ElMessage.success(`成功发放 ${ids.length} 条奖励（模拟）`)
+    ElMessage.success('操作成功（模拟）')
+    remarkDialogVisible.value = false
+    loadList()
+    loadStats()
   }
+}
+
+const approveRecord = (row) => {
+  openRemarkDialog('approve', row.id, '审核通过升级记录')
+}
+
+const rejectRecord = (row) => {
+  openRemarkDialog('reject', row.id, '审核拒绝升级记录')
+}
+
+const markRewarded = (row) => {
+  openRemarkDialog('reward', row.id, '发放升级奖励')
+}
+
+const batchApprove = () => {
+  const ids = selectedRows.value.filter(r => r.status === 1).map(r => r.id)
+  if (!ids.length) return ElMessage.warning('没有待审核的记录')
+  openRemarkDialog('batch_approve', null, `批量审核通过 (${ids.length}条)`, ids)
+}
+
+const batchReject = () => {
+  const ids = selectedRows.value.filter(r => r.status === 1).map(r => r.id)
+  if (!ids.length) return ElMessage.warning('没有待审核的记录')
+  openRemarkDialog('batch_reject', null, `批量审核拒绝 (${ids.length}条)`, ids)
+}
+
+const batchReward = () => {
+  const ids = selectedRows.value.filter(r => !r.is_rewarded && r.reward_bonus > 0 && r.status === 2).map(r => r.id)
+  if (!ids.length) return ElMessage.warning('没有待发放的奖励（需审核通过且有奖励金额）')
+  openRemarkDialog('batch_reward', null, `批量发放升级奖励 (${ids.length}条)`, ids)
 }
 
 const renderTrendChart = async () => {
