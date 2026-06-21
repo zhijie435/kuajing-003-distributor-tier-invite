@@ -11,7 +11,7 @@ class DealerLevelController extends Controller
 {
     public function index(Request $request)
     {
-        $query = DealerLevel::query();
+        $query = DealerLevel::withCount('users');
         if ($request->has('is_active')) {
             $query->where('is_active', $request->boolean('is_active'));
         }
@@ -73,6 +73,7 @@ class DealerLevelController extends Controller
             'min_achievement', 'min_invite_count', 'commission_rate',
             'reward_bonus', 'privileges', 'is_active',
         ]));
+        $level = $level->fresh()->loadCount('users');
         return $this->success($level, '等级创建成功', 201);
     }
 
@@ -103,6 +104,7 @@ class DealerLevelController extends Controller
             'min_achievement', 'min_invite_count', 'commission_rate',
             'reward_bonus', 'privileges', 'is_active',
         ]));
+        $level = $level->fresh()->loadCount('users');
         return $this->success($level, '等级更新成功');
     }
 
@@ -127,6 +129,7 @@ class DealerLevelController extends Controller
         }
         $level->is_active = !$level->is_active;
         $level->save();
+        $level = $level->fresh()->loadCount('users');
         return $this->success($level, $level->is_active ? '已启用' : '已禁用');
     }
 

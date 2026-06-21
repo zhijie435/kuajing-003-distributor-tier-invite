@@ -96,8 +96,9 @@
         <el-table-column label="状态" width="90" align="center">
           <template #default="{ row }">
             <el-switch
-              :model-value="row.is_active"
-              @change="toggleLevel(row)"
+              v-model="row.is_active"
+              :loading="row._toggleLoading"
+              @change="val => toggleLevel(row, val)"
               active-text="启用"
               inactive-text="禁用"
             />
@@ -264,7 +265,13 @@ const openCreateDialog = () => {
 
 const openEditDialog = (row) => {
   isEdit.value = true
-  Object.keys(form).forEach(k => form[k] = row[k] ?? form[k])
+  Object.keys(form).forEach(k => {
+    if (k === 'privileges') {
+      form.privileges = Array.isArray(row.privileges) ? [...row.privileges] : []
+    } else {
+      form[k] = row[k] ?? form[k]
+    }
+  })
   formDialogVisible.value = true
 }
 
@@ -272,39 +279,61 @@ const submitForm = async () => {
   await formRef.value?.validate()
   try {
     if (isEdit.value) {
-      await dealerLevelApi.update(form.id, form)
+      const res = await dealerLevelApi.update(form.id, form)
+      if (res?.data) {
+        const idx = list.value.findIndex(i => i.id === res.data.id)
+        if (idx > -1) list.value.splice(idx, 1, { ...list.value[idx], ...res.data })
+      }
       ElMessage.success('等级更新成功')
     } else {
-      await dealerLevelApi.create(form)
+      const res = await dealerLevelApi.create(form)
+      if (res?.data) list.value.unshift(res.data)
       ElMessage.success('等级创建成功')
     }
     formDialogVisible.value = false
-    loadList()
-    loadStats()
+    await Promise.all([loadList(), loadStats()])
   } catch {
     ElMessage.success(isEdit.value ? '等级更新成功（模拟）' : '等级创建成功（模拟）')
     formDialogVisible.value = false
-    loadList()
+    await Promise.all([loadList(), loadStats()])
   }
 }
 
-const toggleLevel = async (row) => {
+const syncRowToLatest = (targetId, latestData) => {
+  if (!latestData) return
+  const idx = list.value.findIndex(i => i.id === targetId)
+  if (idx > -1) {
+    list.value.splice(idx, 1, { ...list.value[idx], ...latestData })
+  }
+}
+
+const toggleLevel = async (row, targetValue) => {
+  const previousValue = !targetValue
+  row._toggleLoading = true
   try {
-    await dealerLevelApi.toggle(row.id)
-    ElMessage.success('状态切换成功')
+    const res = await dealerLevelApi.toggle(row.id)
+    if (res?.data) syncRowToLatest(row.id, res.data)
+    await loadStats()
+    ElMessage.success(`已${res?.data?.is_active ? '启用' : '禁用'}`)
   } catch {
+    row.is_active = previousValue
     ElMessage.success('状态切换成功（模拟）')
+    await loadStats()
+  } finally {
+    row._toggleLoading = false
   }
 }
 
 const removeLevel = async (row) => {
   try {
     await dealerLevelApi.remove(row.id)
+    list.value = list.value.filter(i => i.id !== row.id)
     ElMessage.success('删除成功')
-    loadList()
+    await Promise.all([loadList(), loadStats()])
   } catch {
     list.value = list.value.filter(i => i.id !== row.id)
     ElMessage.success('删除成功（模拟）')
+    await Promise.all([loadList(), loadStats()])
   }
 }
 
